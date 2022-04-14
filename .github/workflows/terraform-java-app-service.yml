@@ -14,8 +14,6 @@ on:
         required: true
       tf_storage_account:
         required: true
-      sql_helper_endpoint:
-        required: false
 
 jobs:
   terraform:
@@ -28,20 +26,8 @@ jobs:
           tf_storage_account: ${{ secrets.tf_storage_account }}
           application: ${{ inputs.application }}
           environment: ${{ inputs.environment }}
-  sql-user:
-    needs: [terraform]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create database user
-        env:
-          RUN_STEP: ${{ secrets.sql_helper_endpoint != '' }}
-        if: env.RUN_STEP == 'true'
-        uses: kgknutsson/github-actions/gitops-create-sql-user@v1
-        with:
-          http_endpoint: ${{ secrets.sql_helper_endpoint }}
-          azure_credentials: ${{ secrets.azure_credentials }}
   deploy:
-    needs: [terraform, sql-user]
+    needs: [terraform]
     runs-on: ubuntu-latest
     steps:
       - name: Deploy a Java application to Azure App Service
