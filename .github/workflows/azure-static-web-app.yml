@@ -1,0 +1,18 @@
+name: Deploy to Azure Static Web Apps
+
+on:
+  workflow_call:
+    inputs:
+      application:
+        type: string
+        required: true
+      target:
+        type: string
+        required: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+        echo ${{ inputs.target }}
