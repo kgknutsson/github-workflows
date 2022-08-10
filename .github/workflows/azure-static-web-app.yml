@@ -6,14 +6,84 @@ on:
       application:
         type: string
         required: true
-      target:
+      target_resource:
         type: string
         required: true
+      api_location:
+        type: string
+        required: false
+        default: ""
+    secrets:
+      azure_credentials:
+        required: true
+        
+
+# Environment variables available to all jobs and steps in this workflow
+env:
+  APP_LOCATION: "/" # location of your client code
+  API_LOCATION: "${{ inputs.api_location }}" # location of your api source code - optional
+  APP_ARTIFACT_LOCATION: "dist/apps/${{ inputs.application }}" # location of client code build output
+  APP_BUILD_COMMAND: "yarn build ${{ inputs.application }}"
+  SWA_RESOURCE_NAME: "${{ inputs.target_resource }}"
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  build_and_deploy_job:
+    permissions:
+      contents: read # for actions/checkout to fetch code
+      pull-requests: write # for Azure/static-web-apps-deploy to comment on PRs
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
+    name: Build and Deploy Job
     steps:
-      - env:
-          MESSAGE: ${{ inputs.target }}
-        run: echo $MESSAGE
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.azure_credentials }}
+      - id: staticwebapp_secrets
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            APIKEY=$(az staticwebapp secrets list --name ${{ env.SWA_RESOURCE_NAME }} --query properties.apiKey --output tsv)
+            echo "::set-output name=APIKEY::$APIKEY"
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Build And Deploy
+        id: builddeploy
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.staticwebapp_secrets.outputs.APIKEY }} # secret containing api token for app
+          repo_token: ${{ secrets.GITHUB_TOKEN }} # Used for Github integrations (i.e. PR comments)
+          action: "upload"
+          ###### Repository/Build Configurations - These values can be configured to match you app requirements. ######
+          # For more information regarding Static Web App workflow configurations, please visit: https://aka.ms/swaworkflowconfig
+          app_location: ${{ env.APP_LOCATION }}
+          api_location: ${{ env.API_LOCATION }}
+          app_artifact_location: ${{ env.APP_ARTIFACT_LOCATION }}
+          app_build_command: ${{ env.APP_BUILD_COMMAND }}
+          ###### End of Repository/Build Configurations ######
+
+  close_pull_request_job:
+    permissions:
+      contents: none
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    name: Close Pull Request Job
+    steps:
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.azure_credentials }}
+      - id: staticwebapp_secrets
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            APIKEY=$(az staticwebapp secrets list --name ${{ env.SWA_RESOURCE_NAME }} --query properties.apiKey --output tsv)
+            echo "::set-output name=APIKEY::$APIKEY"
+      - name: Close Pull Request
+        id: closepullrequest
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.staticwebapp_secrets.outputs.APIKEY }} # secret containing api token for app
+          action: "close"
