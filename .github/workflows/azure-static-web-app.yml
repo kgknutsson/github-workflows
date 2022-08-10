@@ -23,7 +23,7 @@ env:
   APP_LOCATION: "/" # location of your client code
   API_LOCATION: "${{ inputs.api_location }}" # location of your api source code - optional
   APP_ARTIFACT_LOCATION: "dist/apps/${{ inputs.application }}" # location of client code build output
-  APP_BUILD_COMMAND: "yarn build ${{ inputs.application }}"
+  APP_BUILD_COMMAND: "yarn nx build ${{ inputs.application }}"
   SWA_RESOURCE_NAME: "${{ inputs.target_resource }}"
 
 permissions:
