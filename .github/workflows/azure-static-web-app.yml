@@ -9,10 +9,6 @@ on:
       target_resource:
         type: string
         required: true
-      api_location:
-        type: string
-        required: false
-        default: ""
     secrets:
       azure_credentials:
         required: true
@@ -21,10 +17,10 @@ on:
 # Environment variables available to all jobs and steps in this workflow
 env:
   APP_LOCATION: "/" # location of your client code
-  API_LOCATION: "${{ inputs.api_location }}" # location of your api source code - optional
+  API_LOCATION: "apps/${{ inputs.application }}/api" # location of your api source code - optional
   APP_ARTIFACT_LOCATION: "dist/apps/${{ inputs.application }}" # location of client code build output
-  APP_BUILD_COMMAND: "yarn nx build ${{ inputs.application }}"
-  SWA_RESOURCE_NAME: "${{ inputs.target_resource }}"
+  APP_BUILD_COMMAND: "yarn nx build ${{ inputs.application }}" # client code build command - optional
+  SWA_RESOURCE_NAME: "${{ inputs.target_resource }}" # azure staticwebapp to deploy
 
 permissions:
   contents: read
