@@ -5,7 +5,7 @@ on:
     inputs:
       application:
         type: string
-        required: true
+        required: false
       environment:
         type: string
         required: true
@@ -24,7 +24,6 @@ jobs:
         with:
           azure_credentials: ${{ secrets.azure_credentials }}
           tf_storage_account: ${{ secrets.tf_storage_account }}
-          application: ${{ inputs.application }}
           environment: ${{ inputs.environment }}
   deploy:
     needs: [terraform]
