@@ -9,6 +9,9 @@ on:
       environment:
         type: string
         required: true
+      flyway_script_locations:
+        type: string
+        required: false
     secrets:
       azure_credentials:
         required: true
@@ -33,3 +36,12 @@ jobs:
         uses: kgknutsson/github-actions/gitops-deploy-to-app-service-java@v1
         with:
           azure_credentials: ${{ secrets.azure_credentials }}
+  flyway:
+    needs: [terraform]
+    if: inputs.flyway_script_locations != ''
+    runs-on: self-hosted
+    steps:
+      - name: Apply Flyway database migrations
+        uses: kgknutsson/github-actions/gitops-sql-migrate-flyway@v1
+        with:
+          script-locations: ${{ inputs.flyway_script_locations }}
