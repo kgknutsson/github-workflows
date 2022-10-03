@@ -1,0 +1,62 @@
+name: Flyway migrate test
+
+on:
+  workflow_call:
+    inputs:
+      flyway_script_locations:
+        type: string
+        required: true
+      flyway_command:
+        type: string
+        required: false
+        default: migrate
+    secrets:
+      mssql_sa_password:
+        required: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      flyway: ${{ steps.filter.outputs.flyway }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+      - name: Set job filters
+        uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            flyway:
+              - '${{ inputs.flyway_script_locations }}/**'
+
+  flyway:
+    runs-on: ubuntu-latest
+    container: flyway/flyway:latest
+    needs: changes
+    if: ${{ needs.changes.outputs.flyway == 'true' }}
+
+    services:
+      sql:
+        image: mcr.microsoft.com/azure-sql-edge:latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: ${{ secrets.mssql_sa_password }}
+        options: >-
+          --health-cmd "grep 'SQL Server is now ready for client connections.' /var/opt/mssql/log/errorlog"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+      - name: Create database init script
+        run: echo "CREATE DATABASE test\nGO\n" > init_db.sql
+      - name: Run database init script
+        uses: azure/sql-action@v2
+        with:
+          connection-string: 'Server=sql; User ID=sa; Password=${{ secrets.mssql_sa_password }}; Initial Catalog=master'
+          path: './init_db.sql'
+      - name: Run flyway command
+        env:
+          FLYWAY_LOCATIONS: 'filesystem:./${{ inputs.flyway_script_locations }}'
+        run: flyway -user=sa -password=${{ secrets.mssql_sa_password }} -url='jdbc:sqlserver://sql;database=test;encrypt=false;' ${{ inputs.flyway_command }}
