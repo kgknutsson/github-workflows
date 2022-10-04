@@ -21,6 +21,7 @@ on:
 jobs:
   terraform:
     runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
     steps:
       - name: Apply Terraform configuration
         uses: kgknutsson/github-actions/gitops-apply-terraform@v1
