@@ -17,6 +17,7 @@ on:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
     outputs:
       flyway: ${{ steps.filter.outputs.flyway }}
 
