@@ -42,7 +42,7 @@ jobs:
         with:
           inlineScript: |
             APIKEY=$(az staticwebapp secrets list --name ${{ env.SWA_RESOURCE_NAME }} --query properties.apiKey --output tsv)
-            echo "::set-output name=APIKEY::$APIKEY"
+            echo "APIKEY=$APIKEY" >> $GITHUB_OUTPUT
       - uses: actions/checkout@v3
         with:
           submodules: true
@@ -76,7 +76,7 @@ jobs:
         with:
           inlineScript: |
             APIKEY=$(az staticwebapp secrets list --name ${{ env.SWA_RESOURCE_NAME }} --query properties.apiKey --output tsv)
-            echo "::set-output name=APIKEY::$APIKEY"
+            echo "APIKEY=$APIKEY" >> $GITHUB_OUTPUT
       - name: Close Pull Request
         id: closepullrequest
         uses: Azure/static-web-apps-deploy@v1
