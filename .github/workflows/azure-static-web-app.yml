@@ -9,9 +9,6 @@ on:
       target_resource:
         type: string
         required: true
-    secrets:
-      azure_credentials:
-        required: true
         
 
 # Environment variables available to all jobs and steps in this workflow
@@ -23,9 +20,6 @@ env:
   CONFIG_FILE_LOCATION: "apps/${{ inputs.application }}" # location of staticwebapp.config.json
   SWA_RESOURCE_NAME: "${{ inputs.target_resource }}" # azure staticwebapp to deploy
 
-permissions:
-  contents: read
-
 jobs:
   build_and_deploy_job:
     permissions:
@@ -36,19 +30,12 @@ jobs:
     runs-on: ubuntu-latest
     name: Build and Deploy Job
     steps:
-      - name: Set environment variables
-        env:
-          AZURE_CREDENTIALS: ${{ secrets.azure_credentials }}
-        run: |
-          echo "ARM_CLIENT_ID=$(echo $AZURE_CREDENTIALS | jq -r .clientId)" >> $GITHUB_ENV
-          echo "ARM_SUBSCRIPTION_ID=$(echo $AZURE_CREDENTIALS | jq -r .subscriptionId)" >> $GITHUB_ENV
-          echo "ARM_TENANT_ID=$(echo $AZURE_CREDENTIALS | jq -r .tenantId)" >> $GITHUB_ENV
       - name: Login to Azure
         uses: azure/login@v1
         with:
-          client-id: ${{ env.ARM_CLIENT_ID }}
-          tenant-id: ${{ env.ARM_TENANT_ID }}
-          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
       - id: staticwebapp_secrets
         uses: azure/CLI@v1
         with:
@@ -77,14 +64,16 @@ jobs:
 
   close_pull_request_job:
     permissions:
-      contents: none
+      id-token: write
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
     name: Close Pull Request Job
     steps:
       - uses: azure/login@v1
         with:
-          creds: ${{ secrets.azure_credentials }}
+          client-id: ${{ secrets.CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
       - id: staticwebapp_secrets
         uses: azure/CLI@v1
         with:
