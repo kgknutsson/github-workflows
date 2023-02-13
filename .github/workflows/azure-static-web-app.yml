@@ -6,7 +6,7 @@ on:
       application:
         type: string
         required: true
-      target_resource:
+      environment:
         type: string
         required: true
       build-environment:
@@ -22,7 +22,7 @@ env:
   APP_ARTIFACT_LOCATION: "dist/apps/${{ inputs.application }}" # location of client code build output
   APP_BUILD_COMMAND: "yarn nx build ${{ inputs.application }} --configuration=${{ inputs.build-environment }}" # client code build command - optional
   CONFIG_FILE_LOCATION: "apps/${{ inputs.application }}" # location of staticwebapp.config.json
-  SWA_RESOURCE_NAME: "${{ inputs.target_resource }}" # azure staticwebapp to deploy
+  SWA_RESOURCE_NAME: "stapp-${{ inputs.application }}-${{ inputs.environment }}" # azure staticwebapp to deploy
 
 jobs:
   build_and_deploy_job:
@@ -32,6 +32,7 @@ jobs:
       pull-requests: write # for Azure/static-web-apps-deploy to comment on PRs
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     name: Build and Deploy Job
     steps:
       - name: Login to Azure
@@ -71,6 +72,7 @@ jobs:
       id-token: write
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     name: Close Pull Request Job
     steps:
       - uses: azure/login@v1
