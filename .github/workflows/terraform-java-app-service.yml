@@ -99,6 +99,6 @@ jobs:
       contents: read
     steps:
       - name: Apply Flyway database migrations
-        uses: kgknutsson/github-actions/gitops-sql-migrate-flyway@v1
+        uses: kgknutsson/github-actions/gitops-sql-migrate-flyway@v2
         with:
           script-locations: ${{ inputs.flyway_script_locations }}
