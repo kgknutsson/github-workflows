@@ -9,6 +9,9 @@ on:
       environment:
         type: string
         required: true
+      tf_environment:
+        type: string
+        required: false
       flyway_script_locations:
         type: string
         required: false
@@ -32,7 +35,7 @@ jobs:
           subscription_id: ${{ secrets.SUBSCRIPTION_ID }}
           tenant_id: ${{ secrets.TENANT_ID }}
           tf_storage_account: ${{ secrets.TF_STORAGE_ACCOUNT }}
-          environment: ${{ inputs.environment }}
+          environment: ${{ inputs.tf_environment != '' && inputs.tf_environment || inputs.environment }}
 
   deploy:
     needs: [terraform]
