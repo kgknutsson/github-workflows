@@ -18,6 +18,7 @@ on:
       slot-name:
         type: string
         required: false
+        default: production
 
 jobs:
   terraform:
@@ -29,7 +30,7 @@ jobs:
       contents: read
     steps:
       - name: Apply Terraform configuration
-        uses: kgknutsson/github-actions/gitops-apply-terraform@v2
+        uses: kgknutsson/github-actions/gitops-apply-terraform@v3
         with:
           client_id: ${{ secrets.CLIENT_ID }}
           subscription_id: ${{ secrets.SUBSCRIPTION_ID }}
@@ -44,46 +45,36 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - name: Download Terraform output data
-        uses: actions/download-artifact@v3
-        with:
-          name: terraform-output
-      - name: Set environment variables
-        run: |
-          echo "APPLICATION_CAF_NAME=$(cat terraform-output.json | jq -r .application_caf_name.value)" >> $GITHUB_ENV
-          echo "FUNCTION_CAF_NAME=$(cat terraform-output.json | jq -r '.function_caf_name.value | select(. != null)')" >> $GITHUB_ENV
-          echo "RESOURCE_GROUP_NAME=$(cat terraform-output.json | jq -r .resource_group_name.value)" >> $GITHUB_ENV
-      - name: Download application package
-        uses: actions/download-artifact@v3
-        with:
-          name: package
-          path: app-package
       - name: Login to Azure
         uses: azure/login@v1
         with:
           client-id: ${{ secrets.CLIENT_ID }}
           tenant-id: ${{ secrets.TENANT_ID }}
           subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
-      - name: Deploy to Azure App Service
-        if: inputs.slot-name == ''
-        uses: azure/webapps-deploy@v2
+      - name: Download Terraform output data
+        uses: actions/download-artifact@v4
         with:
-          app-name: ${{ env.APPLICATION_CAF_NAME }}
-          package: 'app-package/*.[j,w]ar'
-      - name: Deploy to Azure App Service Slot
-        if: inputs.slot-name != ''
-        uses: azure/webapps-deploy@v2
+          name: terraform-output
+      - name: Set environment variables
+        run: |
+          echo "APPLICATION_CAF_NAME=$(cat terraform-output.json | jq -r '.application_caf_name.value | select(. != null)')" >> $GITHUB_ENV
+          echo "FUNCTION_CAF_NAME=$(cat terraform-output.json | jq -r '.function_caf_name.value | select(. != null)')" >> $GITHUB_ENV
+      - name: Download application package
+        if: env.APPLICATION_CAF_NAME != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: app-package
+      - name: Deploy to Azure App Service
+        if: env.APPLICATION_CAF_NAME != ''
+        uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.APPLICATION_CAF_NAME }}
           slot-name: ${{ inputs.slot-name }}
           package: 'app-package/*.[j,w]ar'
-      - name: Restart Azure App Service
-        if: inputs.slot-name == ''
-        run: |
-          az webapp restart --name ${{ env.APPLICATION_CAF_NAME }} --resource-group ${{ env.RESOURCE_GROUP_NAME }}
       - name: Download function package
         if: env.FUNCTION_CAF_NAME != ''
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: function-package
           path: function-package

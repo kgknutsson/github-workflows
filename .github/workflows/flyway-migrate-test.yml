@@ -23,9 +23,9 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Set job filters
-        uses: dorny/paths-filter@v2
+        uses: dorny/paths-filter@v3
         id: filter
         with:
           filters: |
@@ -49,11 +49,11 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Create database init script
         run: echo "CREATE DATABASE test\nGO\n" > init_db.sql
       - name: Run database init script
-        uses: azure/sql-action@v2.2
+        uses: azure/sql-action@v2.2.1
         with:
           connection-string: 'Server=sql; User ID=sa; Password=${{ secrets.mssql_sa_password }}; Initial Catalog=master'
           path: './init_db.sql'
