@@ -15,11 +15,20 @@ on:
         required: true
 
 jobs:
-  changes:
+  flyway:
     runs-on: ubuntu-latest
     if: github.actor != 'dependabot[bot]'
-    outputs:
-      flyway: ${{ steps.filter.outputs.flyway }}
+
+    services:
+      sql:
+        image: mcr.microsoft.com/azure-sql-edge:latest
+        ports:
+          - 1433:1433
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: ${{ secrets.mssql_sa_password }}
+        options: >-
+          --health-cmd "grep 'SQL Server is now ready for client connections.' /var/opt/mssql/log/errorlog"
 
     steps:
       - name: Checkout repo
@@ -31,33 +40,15 @@ jobs:
           filters: |
             flyway:
               - '${{ inputs.flyway_script_locations }}/**'
-
-  flyway:
-    runs-on: ubuntu-latest
-    container: flyway/flyway:latest
-    needs: changes
-    if: ${{ needs.changes.outputs.flyway == 'true' }}
-
-    services:
-      sql:
-        image: mcr.microsoft.com/azure-sql-edge:latest
-        env:
-          ACCEPT_EULA: Y
-          MSSQL_SA_PASSWORD: ${{ secrets.mssql_sa_password }}
-        options: >-
-          --health-cmd "grep 'SQL Server is now ready for client connections.' /var/opt/mssql/log/errorlog"
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-      - name: Create database init script
-        run: echo "CREATE DATABASE test\nGO\n" > init_db.sql
       - name: Run database init script
-        uses: azure/sql-action@v2.2.1
-        with:
-          connection-string: 'Server=sql; User ID=sa; Password=${{ secrets.mssql_sa_password }}; Initial Catalog=master'
-          path: './init_db.sql'
+        if: steps.filter.outputs.flyway == 'true'
+        run: sqlcmd -U sa -P ${{ secrets.mssql_sa_password }} -S localhost -Q "CREATE DATABASE test"
       - name: Run flyway command
+        uses: docker://flyway/flyway
         env:
+          FLYWAY_URL: jdbc:sqlserver://sql;database=test;encrypt=false;
+          FLYWAY_USER: sa
+          FLYWAY_PASSWORD: ${{ secrets.mssql_sa_password }}
           FLYWAY_LOCATIONS: 'filesystem:./${{ inputs.flyway_script_locations }}'
-        run: flyway -user=sa -password=${{ secrets.mssql_sa_password }} -url='jdbc:sqlserver://sql;database=test;encrypt=false;' ${{ inputs.flyway_command }}
+        with:
+          args: ${{ inputs.flyway_command }}
