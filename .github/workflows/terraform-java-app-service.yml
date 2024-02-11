@@ -101,7 +101,7 @@ jobs:
       - name: Set environment variables
         run: echo "FLYWAY_URL=$(cat terraform-output.json | jq -r .database_jdbc_string.value)" >> $GITHUB_ENV
       - name: Run flyway migrate
-        uses: docker://flyway/flyway
+        uses: docker://flyway/flyway:9.19
         env:
           FLYWAY_LOCATIONS: 'filesystem:./${{ inputs.flyway_script_locations }}'
         with:
