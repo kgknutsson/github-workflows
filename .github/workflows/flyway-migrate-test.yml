@@ -33,15 +33,7 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-      - name: Set job filters
-        uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            flyway:
-              - '${{ inputs.flyway_script_locations }}/**'
       - name: Run database init script
-        if: steps.filter.outputs.flyway == 'true'
         run: sqlcmd -U sa -P ${{ secrets.mssql_sa_password }} -S localhost -Q "CREATE DATABASE test"
       - name: Run flyway command
         uses: docker://flyway/flyway
