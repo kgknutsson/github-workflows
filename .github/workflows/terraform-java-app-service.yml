@@ -19,6 +19,9 @@ on:
         type: string
         required: false
         default: production
+      target-path:
+        type: string
+        required: false
 
 jobs:
   terraform:
@@ -72,6 +75,7 @@ jobs:
           app-name: ${{ env.APPLICATION_CAF_NAME }}
           slot-name: ${{ inputs.slot-name }}
           package: 'app-package/*.[j,w]ar'
+          target-path: ${{ inputs.target-path }}
       - name: Download function package
         if: env.FUNCTION_CAF_NAME != ''
         uses: actions/download-artifact@v4
