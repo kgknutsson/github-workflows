@@ -19,6 +19,10 @@ on:
         type: string
         required: false
         default: production
+      package:
+        type: string
+        required: false
+        default: 'app-package/*.[j,w]ar'
       target-path:
         type: string
         required: false
@@ -74,7 +78,7 @@ jobs:
         with:
           app-name: ${{ env.APPLICATION_CAF_NAME }}
           slot-name: ${{ inputs.slot-name }}
-          package: 'app-package/*.[j,w]ar'
+          package: ${{ inputs.package }}
           target-path: ${{ inputs.target-path }}
       - name: Download function package
         if: env.FUNCTION_CAF_NAME != ''
