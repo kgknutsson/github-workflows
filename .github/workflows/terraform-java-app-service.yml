@@ -19,6 +19,9 @@ on:
         type: string
         required: false
         default: production
+      slot-name2:
+        type: string
+        required: false
       package:
         type: string
         required: false
@@ -82,6 +85,14 @@ jobs:
         with:
           app-name: ${{ env.APPLICATION_CAF_NAME }}
           slot-name: ${{ inputs.slot-name }}
+          package: ${{ inputs.package }}
+          target-path: ${{ inputs.target-path }}
+      - name: Deploy to Azure App Service
+        if: env.APPLICATION_CAF_NAME != '' && inputs.slot-name2 != ''
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.APPLICATION_CAF_NAME }}
+          slot-name: ${{ inputs.slot-name2 }}
           package: ${{ inputs.package }}
           target-path: ${{ inputs.target-path }}
       - name: Download function package
