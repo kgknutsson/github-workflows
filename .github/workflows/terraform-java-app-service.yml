@@ -66,7 +66,7 @@ jobs:
           tenant-id: ${{ secrets.TENANT_ID }}
           subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
       - name: Download Terraform output data
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: terraform-output
       - name: Set environment variables
@@ -75,7 +75,7 @@ jobs:
           echo "FUNCTION_CAF_NAME=$(cat terraform-output.json | jq -r '.function_caf_name.value | select(. != null)')" >> $GITHUB_ENV
       - name: Download application package
         if: env.APPLICATION_CAF_NAME != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: package
           path: app-package
@@ -97,7 +97,7 @@ jobs:
           target-path: ${{ inputs.target-path }}
       - name: Download function package
         if: inputs.deploy-function && env.FUNCTION_CAF_NAME != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: function-package
           path: function-package
@@ -118,7 +118,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
       - name: Download Terraform output data
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: terraform-output
       - name: Set environment variables
