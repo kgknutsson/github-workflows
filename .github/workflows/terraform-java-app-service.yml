@@ -73,6 +73,21 @@ jobs:
         run: |
           echo "APPLICATION_CAF_NAME=$(cat terraform-output.json | jq -r '.application_caf_name.value | select(. != null)')" >> $GITHUB_ENV
           echo "FUNCTION_CAF_NAME=$(cat terraform-output.json | jq -r '.function_caf_name.value | select(. != null)')" >> $GITHUB_ENV
+          echo "RESOURCE_GROUP_NAME=$(cat terraform-output.json | jq -r '.resource_group_name.value | select(. != null)')" >> $GITHUB_ENV
+      - name: Start staging slot
+        if: env.APPLICATION_CAF_NAME != '' && inputs.slot-name != 'production'
+        run: |
+          az webapp start -g ${{ env.RESOURCE_GROUP_NAME }} -n ${{ env.APPLICATION_CAF_NAME }} -s ${{ inputs.slot-name }}
+          # Wait for SCM site to become ready
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://${{ env.APPLICATION_CAF_NAME }}-${{ inputs.slot-name }}.scm.azurewebsites.net/ 2>/dev/null || echo "000")
+            if [ "$STATUS" != "503" ] && [ "$STATUS" != "000" ]; then
+              echo "SCM site ready (HTTP $STATUS)"
+              break
+            fi
+            echo "Waiting for SCM site... (attempt $i, HTTP $STATUS)"
+            sleep 10
+          done
       - name: Download application package
         if: env.APPLICATION_CAF_NAME != ''
         uses: actions/download-artifact@v8
@@ -87,6 +102,30 @@ jobs:
           slot-name: ${{ inputs.slot-name }}
           package: ${{ inputs.package }}
           target-path: ${{ inputs.target-path }}
+      - name: Wait for health check and swap slot
+        if: env.APPLICATION_CAF_NAME != '' && inputs.slot-name != 'production'
+        run: |
+          HEALTH_URL="https://${{ env.APPLICATION_CAF_NAME }}-${{ inputs.slot-name }}.azurewebsites.net/actuator/health"
+          echo "Waiting for health check at $HEALTH_URL ..."
+          for i in $(seq 1 60); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo "000")
+            if [ "$STATUS" == "200" ]; then
+              echo "Health check passed (attempt $i)"
+              break
+            fi
+            echo "Waiting for app to start... (attempt $i, HTTP $STATUS)"
+            sleep 10
+          done
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Health check did not pass within timeout"
+            exit 1
+          fi
+          echo "Swapping ${{ inputs.slot-name }} to production..."
+          az webapp deployment slot swap -g ${{ env.RESOURCE_GROUP_NAME }} -n ${{ env.APPLICATION_CAF_NAME }} -s ${{ inputs.slot-name }} --target-slot production
+      - name: Stop staging slot
+        if: env.APPLICATION_CAF_NAME != '' && inputs.slot-name != 'production' && always()
+        run: |
+          az webapp stop -g ${{ env.RESOURCE_GROUP_NAME }} -n ${{ env.APPLICATION_CAF_NAME }} -s ${{ inputs.slot-name }} || true
       - name: Deploy to Azure App Service
         if: env.APPLICATION_CAF_NAME != '' && inputs.slot-name2 != ''
         uses: azure/webapps-deploy@v3
