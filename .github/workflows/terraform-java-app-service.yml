@@ -70,7 +70,7 @@ jobs:
 
   deploy:
     needs: [terraform]
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.explicit_slot_swap && 'self-hosted' || 'ubuntu-latest' }}
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
