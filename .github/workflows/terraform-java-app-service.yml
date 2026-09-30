@@ -49,6 +49,14 @@ on:
         type: number
         required: false
         default: 10
+      manage_deploy_slot_lifecycle:
+        type: boolean
+        required: false
+        default: false
+        description: >-
+          When true with explicit_slot_swap, start the deploy slot (slot-name) before
+          package deploy and stop it after production health checks pass, to free App
+          Service plan memory between releases.
 
 jobs:
   terraform:
@@ -118,6 +126,58 @@ jobs:
             echo "::error::explicit_slot_swap cannot be combined with slot-name2: production"
             exit 1
           fi
+      - name: Validate deploy slot lifecycle inputs
+        if: env.APPLICATION_CAF_NAME != '' && inputs.manage_deploy_slot_lifecycle
+        env:
+          SLOT_NAME: ${{ inputs.slot-name }}
+        run: |
+          if [ "${{ inputs.explicit_slot_swap }}" != "true" ]; then
+            echo "::error::manage_deploy_slot_lifecycle requires explicit_slot_swap: true"
+            exit 1
+          fi
+          if [ -z "$SLOT_NAME" ] || [ "$SLOT_NAME" = "production" ]; then
+            echo "::error::manage_deploy_slot_lifecycle requires slot-name to be a non-production deployment slot"
+            exit 1
+          fi
+      - name: Start deploy slot before package deploy
+        if: env.APPLICATION_CAF_NAME != '' && inputs.manage_deploy_slot_lifecycle && inputs.explicit_slot_swap && inputs.slot-name != 'production'
+        env:
+          SLOT_NAME: ${{ inputs.slot-name }}
+        run: |
+          set -eo pipefail
+          error_file="$(mktemp)"
+          trap 'rm -f "$error_file"' EXIT
+
+          if ! slot_state=$(az webapp show --name "$APPLICATION_CAF_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query state -o tsv 2>"$error_file"); then
+            echo "::error::Failed to query slot '$SLOT_NAME' state for app '$APPLICATION_CAF_NAME'"
+            cat "$error_file"
+            exit 1
+          fi
+          if [ "$slot_state" = "Running" ]; then
+            echo "Deploy slot '$SLOT_NAME' is already Running"
+            exit 0
+          fi
+
+          echo "Starting deploy slot '$SLOT_NAME' (zip deploy does not start a stopped slot on its own)"
+          if ! az webapp start --name "$APPLICATION_CAF_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" 2>"$error_file"; then
+            echo "::error::Failed to start slot '$SLOT_NAME' for app '$APPLICATION_CAF_NAME'"
+            cat "$error_file"
+            exit 1
+          fi
+          for attempt in $(seq 1 12); do
+            if ! slot_state=$(az webapp show --name "$APPLICATION_CAF_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query state -o tsv 2>"$error_file"); then
+              echo "::error::Failed to query slot '$SLOT_NAME' state after the start request"
+              cat "$error_file"
+              exit 1
+            fi
+            if [ "$slot_state" = "Running" ]; then
+              echo "Deploy slot '$SLOT_NAME' started successfully"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Deploy slot '$SLOT_NAME' did not reach Running state after the start request"
+          exit 1
       - name: Download application package
         if: env.APPLICATION_CAF_NAME != ''
         uses: actions/download-artifact@v8
@@ -205,6 +265,45 @@ jobs:
           done
 
           echo "::error::Production health check failed after $ATTEMPTS attempts"
+          exit 1
+      - name: Stop deploy slot after successful promotion
+        if: env.APPLICATION_CAF_NAME != '' && inputs.manage_deploy_slot_lifecycle && env.PRODUCTION_HEALTH_PASSED == 'true'
+        env:
+          SLOT_NAME: ${{ inputs.slot-name }}
+        run: |
+          set -eo pipefail
+          error_file="$(mktemp)"
+          trap 'rm -f "$error_file"' EXIT
+
+          if ! slot_state=$(az webapp show --name "$APPLICATION_CAF_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query state -o tsv 2>"$error_file"); then
+            echo "::error::Failed to query slot '$SLOT_NAME' state for app '$APPLICATION_CAF_NAME'"
+            cat "$error_file"
+            exit 1
+          fi
+          if [ "$slot_state" = "Stopped" ]; then
+            echo "Deploy slot '$SLOT_NAME' is already Stopped"
+            exit 0
+          fi
+
+          echo "Stopping deploy slot '$SLOT_NAME' to free App Service plan memory until the next release"
+          if ! az webapp stop --name "$APPLICATION_CAF_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" 2>"$error_file"; then
+            echo "::error::Failed to stop slot '$SLOT_NAME' for app '$APPLICATION_CAF_NAME'"
+            cat "$error_file"
+            exit 1
+          fi
+          for attempt in $(seq 1 12); do
+            if ! slot_state=$(az webapp show --name "$APPLICATION_CAF_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query state -o tsv 2>"$error_file"); then
+              echo "::error::Failed to query slot '$SLOT_NAME' state after the stop request"
+              cat "$error_file"
+              exit 1
+            fi
+            if [ "$slot_state" = "Stopped" ]; then
+              echo "Deploy slot '$SLOT_NAME' stopped successfully"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Deploy slot '$SLOT_NAME' did not reach Stopped state after the stop request"
           exit 1
       - name: Roll back failed slot swap
         if: failure() && env.SWAP_COMPLETED == 'true' && env.PRODUCTION_HEALTH_PASSED != 'true'
