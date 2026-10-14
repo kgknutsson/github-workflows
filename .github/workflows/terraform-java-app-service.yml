@@ -1,3 +1,5 @@
+# Adds optional flyway_source_ref so testing-slot and manual deploys migrate the selected ref.
+# manage_deploy_slot_lifecycle stays available for explicit slot swap.
 name: Deploy
 
 on:
@@ -15,6 +17,11 @@ on:
       flyway_script_locations:
         type: string
         required: false
+      flyway_source_ref:
+        description: Git ref for Flyway migration scripts. Empty uses the workflow trigger ref.
+        type: string
+        required: false
+        default: ''
       slot-name:
         type: string
         required: false
@@ -375,6 +382,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.flyway_source_ref != '' && inputs.flyway_source_ref || github.ref }}
       - name: Download Terraform output data
         uses: actions/download-artifact@v8
         with:
