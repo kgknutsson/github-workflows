@@ -1,0 +1,172 @@
+# Callable: deploy a built package to a non-production slot, then migrate and start that slot.
+# Caller must run a build job first and upload artifact name: package
+#
+# Pin third-party actions to a full commit SHA.
+# azure/login @v3: a641126d1b8aa4d1fa005f4f92df94a3a4c4c906
+# actions/checkout @v7: 3d3c42e5aac5ba805825da76410c181273ba90b1
+# actions/download-artifact @v8: 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+# The inner deploy workflow is the file in this repository.
+name: Java testing slot deploy
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Branch, tag, or SHA that was built and whose Flyway scripts should run
+        type: string
+        required: true
+      environment:
+        description: GitHub Environment (typically dev)
+        type: string
+        required: true
+      app_name:
+        type: string
+        required: true
+      resource_group:
+        type: string
+        required: true
+      slot_name:
+        type: string
+        required: false
+        default: testing
+      slot_host:
+        description: Hostname without scheme (for summary URL), e.g. app-example-testing.azurewebsites.net
+        type: string
+        required: true
+      flyway_script_locations:
+        description: Path to Flyway migrations relative to repo root
+        type: string
+        required: false
+        default: database/schema-migration
+      deploy_function:
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: java-testing-slot-${{ inputs.environment }}-${{ inputs.app_name }}-${{ inputs.slot_name }}
+  cancel-in-progress: false
+
+jobs:
+  stop-slot-initial:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+      - name: Reject production slot
+        env:
+          SLOT_NAME: ${{ inputs.slot_name }}
+        run: |
+          set -euo pipefail
+          if [ "$SLOT_NAME" = "production" ]; then
+            echo "::error::slot_name must name a deployment slot"
+            exit 1
+          fi
+      - name: Stop testing slot before deployment
+        uses: kgknutsson/github-actions/gitops-ensure-testing-slot-stopped@2ed013be4d0669e9caa25cee0722f74d4b6a1020 # tag: v4
+        with:
+          app_name: ${{ inputs.app_name }}
+          resource_group: ${{ inputs.resource_group }}
+          slot_name: ${{ inputs.slot_name }}
+          allow_missing: 'true'
+
+  deploy:
+    needs: [stop-slot-initial]
+    uses: ./.github/workflows/terraform-java-app-service.yml
+    with:
+      environment: ${{ inputs.environment }}
+      slot-name: ${{ inputs.slot_name }}
+      deploy-function: ${{ inputs.deploy_function }}
+    secrets: inherit
+
+  stop-slot-before-flyway:
+    needs: [deploy]
+    if: ${{ needs.deploy.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+      - name: Ensure testing slot is stopped before migration
+        uses: kgknutsson/github-actions/gitops-ensure-testing-slot-stopped@2ed013be4d0669e9caa25cee0722f74d4b6a1020 # tag: v4
+        with:
+          app_name: ${{ inputs.app_name }}
+          resource_group: ${{ inputs.resource_group }}
+          slot_name: ${{ inputs.slot_name }}
+          allow_missing: 'false'
+
+  flyway:
+    needs: [stop-slot-before-flyway]
+    runs-on: self-hosted
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout ${{ inputs.source_ref }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          ref: ${{ inputs.source_ref }}
+      - name: Download Terraform output data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # tag: v8
+        with:
+          name: terraform-output
+      - name: Set Flyway JDBC URL from Terraform output
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! flyway_url="$(jq -er '.database_jdbc_string.value // empty' terraform-output.json 2>/tmp/flyway-jq-error.log)"; then
+            echo "::error::Unable to read database_jdbc_string.value from terraform-output.json"
+            cat /tmp/flyway-jq-error.log
+            exit 1
+          fi
+          if [ -z "$flyway_url" ]; then
+            echo "::error::terraform-output.json contains an empty database_jdbc_string.value"
+            exit 1
+          fi
+          printf 'FLYWAY_URL=%s\n' "$flyway_url" >> "$GITHUB_ENV"
+      - name: Run flyway migrate
+        uses: docker://flyway/flyway@sha256:34eb901a2ef1c6eba15ad9b01ef35d8a2eebe863a6df68bbe402c37f4a4823b9 # tag: 9.19
+        env:
+          FLYWAY_LOCATIONS: 'filesystem:./${{ inputs.flyway_script_locations }}'
+        with:
+          args: migrate
+
+  start-slot:
+    needs: [deploy, flyway]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+      - name: Start testing slot after successful migration
+        uses: kgknutsson/github-actions/gitops-start-app-service-slot@2ed013be4d0669e9caa25cee0722f74d4b6a1020 # tag: v4
+        with:
+          app_name: ${{ inputs.app_name }}
+          resource_group: ${{ inputs.resource_group }}
+          slot_name: ${{ inputs.slot_name }}
+      - name: Print testing slot URL
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SLOT_HOST: ${{ inputs.slot_host }}
+        run: printf 'Deployed "%s" -> https://%s\n' "$SOURCE_REF" "$SLOT_HOST"
