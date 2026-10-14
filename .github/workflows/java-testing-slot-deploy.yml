@@ -71,7 +71,7 @@ jobs:
             exit 1
           fi
       - name: Stop testing slot before deployment
-        uses: kgknutsson/github-actions/gitops-ensure-testing-slot-stopped@41069cb070a387baf8a71ca4fa90fbd466a61043 # tag: v4
+        uses: kgknutsson/github-actions/gitops-ensure-testing-slot-stopped@2ed013be4d0669e9caa25cee0722f74d4b6a1020 # tag: v4
         with:
           app_name: ${{ inputs.app_name }}
           resource_group: ${{ inputs.resource_group }}
@@ -103,7 +103,7 @@ jobs:
           tenant-id: ${{ secrets.TENANT_ID }}
           subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
       - name: Ensure testing slot is stopped before migration
-        uses: kgknutsson/github-actions/gitops-ensure-testing-slot-stopped@41069cb070a387baf8a71ca4fa90fbd466a61043 # tag: v4
+        uses: kgknutsson/github-actions/gitops-ensure-testing-slot-stopped@2ed013be4d0669e9caa25cee0722f74d4b6a1020 # tag: v4
         with:
           app_name: ${{ inputs.app_name }}
           resource_group: ${{ inputs.resource_group }}
@@ -160,7 +160,7 @@ jobs:
           tenant-id: ${{ secrets.TENANT_ID }}
           subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
       - name: Start testing slot after successful migration
-        uses: kgknutsson/github-actions/gitops-start-app-service-slot@41069cb070a387baf8a71ca4fa90fbd466a61043 # tag: v4
+        uses: kgknutsson/github-actions/gitops-start-app-service-slot@2ed013be4d0669e9caa25cee0722f74d4b6a1020 # tag: v4
         with:
           app_name: ${{ inputs.app_name }}
           resource_group: ${{ inputs.resource_group }}
