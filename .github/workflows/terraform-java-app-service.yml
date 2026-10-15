@@ -60,7 +60,8 @@ on:
 
 jobs:
   terraform:
-    runs-on: ubuntu-latest
+    # ITCO-1546: reach private tfstate from the GitHub hosted VNet runner.
+    runs-on: azure-linux-runner
     if: github.actor != 'dependabot[bot]'
     environment: ${{ inputs.environment }}
     permissions:
