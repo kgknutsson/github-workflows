@@ -1,0 +1,252 @@
+name: Azure App Service slot promotion
+
+on:
+  workflow_call:
+    inputs:
+      webapp-name:
+        description: Azure Web App name (production slot).
+        type: string
+        required: true
+      resource-group:
+        description: Resource group containing the web app.
+        type: string
+        required: true
+      staging-slot:
+        description: Source deployment slot to promote from.
+        type: string
+        required: false
+        default: staging
+      target-slot:
+        description: Target slot name (usually production).
+        type: string
+        required: false
+        default: production
+      package-path:
+        description: >-
+          When non-empty, deploy this package to the staging slot before health checks
+          (same contract as azure/webapps-deploy package input).
+        type: string
+        required: false
+        default: ''
+      package-target-path:
+        description: Optional target path for azure/webapps-deploy.
+        type: string
+        required: false
+        default: ''
+      health-check-url:
+        description: >-
+          Full staging health URL. When empty, the workflow uses the staging slot hostname
+          plus health-check-path or the App Service healthCheckPath site setting.
+        type: string
+        required: false
+        default: ''
+      health-check-path:
+        description: Path appended to the staging slot hostname when health-check-url is empty.
+        type: string
+        required: false
+        default: ''
+      production-health-check-url:
+        description: Full production health URL after swap. When empty, uses production hostname + path.
+        type: string
+        required: false
+        default: ''
+      production-health-check-path:
+        description: Production health path when production-health-check-url is empty.
+        type: string
+        required: false
+        default: ''
+      expected-http-status:
+        description: HTTP status code that indicates a healthy response.
+        type: string
+        required: false
+        default: '200'
+      smoke-test-url:
+        description: Optional URL to verify after production health passes.
+        type: string
+        required: false
+        default: ''
+      staging-health-max-wait-seconds:
+        type: number
+        required: false
+        default: 600
+      promotion-max-wait-seconds:
+        type: number
+        required: false
+        default: 900
+      production-health-max-wait-seconds:
+        type: number
+        required: false
+        default: 600
+      smoke-test-max-wait-seconds:
+        type: number
+        required: false
+        default: 600
+      poll-interval-seconds:
+        type: number
+        required: false
+        default: 15
+      swap-request-timeout-seconds:
+        description: Upper bound for the initial ARM POST before async polling begins.
+        type: number
+        required: false
+        default: 60
+      scripts-ref:
+        description: Git ref of kgknutsson/github-workflows to load promotion scripts from.
+        type: string
+        required: false
+        default: main
+      runner:
+        description: Runner label (use azure-linux-runner when health endpoints are private).
+        type: string
+        required: false
+        default: azure-linux-runner
+    secrets:
+      CLIENT_ID:
+        required: true
+      TENANT_ID:
+        required: true
+      SUBSCRIPTION_ID:
+        required: true
+    outputs:
+      promotion-client-request-id:
+        description: x-ms-client-request-id sent to ARM for activity-log correlation.
+        value: ${{ jobs.promote.outputs.client-request-id }}
+      promotion-swap-started-at:
+        description: UTC timestamp when the ARM swap request was submitted.
+        value: ${{ jobs.promote.outputs.swap-started-at }}
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.webapp-name }}
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      client-request-id: ${{ steps.arm_promote.outputs.client-request-id }}
+      swap-started-at: ${{ steps.arm_promote.outputs.swap-started-at }}
+    steps:
+      - name: Preflight configuration
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+          TARGET_SLOT: ${{ inputs.target-slot }}
+          STAGING_HEALTH_MAX_WAIT_SECONDS: ${{ inputs.staging-health-max-wait-seconds }}
+          PROMOTION_MAX_WAIT_SECONDS: ${{ inputs.promotion-max-wait-seconds }}
+          PRODUCTION_HEALTH_MAX_WAIT_SECONDS: ${{ inputs.production-health-max-wait-seconds }}
+          POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in WEBAPP_NAME RESOURCE_GROUP STAGING_SLOT TARGET_SLOT; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Input $name is required."
+              missing=1
+            fi
+          done
+          if [ "$STAGING_SLOT" = "production" ] || [ -z "$STAGING_SLOT" ]; then
+            echo "::error::staging-slot must be a non-production slot name."
+            missing=1
+          fi
+          if [ "$TARGET_SLOT" != "production" ]; then
+            echo "::error::target-slot must be production for this workflow."
+            missing=1
+          fi
+          for name in STAGING_HEALTH_MAX_WAIT_SECONDS PROMOTION_MAX_WAIT_SECONDS PRODUCTION_HEALTH_MAX_WAIT_SECONDS POLL_INTERVAL_SECONDS; do
+            if ! [[ "${!name}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::$name must be a positive integer (got '${!name}')."
+              missing=1
+            fi
+          done
+          if [ -z "${{ inputs.health-check-url }}" ] && [ -z "${{ inputs.health-check-path }}" ]; then
+            echo "::notice::health-check-url and health-check-path are both empty; staging health will use the App Service healthCheckPath site setting."
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Preflight passed for ${WEBAPP_NAME} (${STAGING_SLOT} -> ${TARGET_SLOT})."
+
+      - name: Checkout promotion scripts
+        uses: actions/checkout@v4
+        with:
+          repository: kgknutsson/github-workflows
+          ref: ${{ inputs.scripts-ref }}
+          path: kgk-github-workflows
+          sparse-checkout: |
+            .github/scripts/azure-app-service-slot-promotion.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+
+      - name: Verify Azure AutoSwap is disabled
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh autoswap-check
+
+      - name: Deploy package to staging slot
+        if: inputs.package-path != ''
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ inputs.webapp-name }}
+          slot-name: ${{ inputs.staging-slot }}
+          package: ${{ inputs.package-path }}
+          target-path: ${{ inputs.package-target-path }}
+
+      - name: Verify staging slot health
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+          HEALTH_CHECK_URL: ${{ inputs.health-check-url }}
+          HEALTH_CHECK_PATH: ${{ inputs.health-check-path }}
+          EXPECTED_HTTP_STATUS: ${{ inputs.expected-http-status }}
+          STAGING_HEALTH_MAX_WAIT_SECONDS: ${{ inputs.staging-health-max-wait-seconds }}
+          POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh staging-health
+
+      - name: Promote staging slot via ARM
+        id: arm_promote
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+          TARGET_SLOT: ${{ inputs.target-slot }}
+          PROMOTION_MAX_WAIT_SECONDS: ${{ inputs.promotion-max-wait-seconds }}
+          POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
+          SWAP_REQUEST_TIMEOUT_SECONDS: ${{ inputs.swap-request-timeout-seconds }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh promote
+
+      - name: Verify production health
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          HEALTH_CHECK_PATH: ${{ inputs.health-check-path }}
+          PRODUCTION_HEALTH_CHECK_URL: ${{ inputs.production-health-check-url }}
+          PRODUCTION_HEALTH_CHECK_PATH: ${{ inputs.production-health-check-path }}
+          EXPECTED_HTTP_STATUS: ${{ inputs.expected-http-status }}
+          PRODUCTION_HEALTH_MAX_WAIT_SECONDS: ${{ inputs.production-health-max-wait-seconds }}
+          POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh production-health
+
+      - name: Optional smoke test
+        if: inputs.smoke-test-url != ''
+        shell: bash
+        env:
+          SMOKE_TEST_URL: ${{ inputs.smoke-test-url }}
+          EXPECTED_HTTP_STATUS: ${{ inputs.expected-http-status }}
+          SMOKE_TEST_MAX_WAIT_SECONDS: ${{ inputs.smoke-test-max-wait-seconds }}
+          POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh smoke-test
