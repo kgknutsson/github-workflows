@@ -19,17 +19,21 @@ normalize_setting() {
   esac
 }
 
+monotonic_seconds() {
+  python3 -c 'import time; print(int(time.monotonic()))'
+}
+
 cmd_autoswap_check() {
   require_var WEBAPP_NAME
   require_var RESOURCE_GROUP
   local staging_slot="${STAGING_SLOT:-staging}"
 
   local auto_swap
-  auto_swap="$(az webapp show \
+  auto_swap="$(az webapp config show \
     --name "$WEBAPP_NAME" \
     --resource-group "$RESOURCE_GROUP" \
     --slot "$staging_slot" \
-    --query siteConfig.autoSwapSlotName \
+    --query autoSwapSlotName \
     --output tsv)"
 
   auto_swap="$(normalize_setting "$auto_swap")"
@@ -65,11 +69,11 @@ resolve_staging_health_url() {
 
   health_path="${HEALTH_CHECK_PATH:-}"
   if [[ -z "$health_path" ]]; then
-    health_path="$(az webapp show \
+    health_path="$(az webapp config show \
       --name "$WEBAPP_NAME" \
       --resource-group "$RESOURCE_GROUP" \
       --slot "$staging_slot" \
-      --query siteConfig.healthCheckPath \
+      --query healthCheckPath \
       --output tsv)"
     health_path="$(normalize_setting "$health_path")"
   fi
@@ -104,10 +108,10 @@ resolve_production_health_url() {
 
   health_path="${PRODUCTION_HEALTH_CHECK_PATH:-${HEALTH_CHECK_PATH:-}}"
   if [[ -z "$health_path" ]]; then
-    health_path="$(az webapp show \
+    health_path="$(az webapp config show \
       --name "$WEBAPP_NAME" \
       --resource-group "$RESOURCE_GROUP" \
-      --query siteConfig.healthCheckPath \
+      --query healthCheckPath \
       --output tsv)"
     health_path="$(normalize_setting "$health_path")"
   fi
@@ -125,24 +129,33 @@ wait_for_http() {
   local poll_interval="$3"
   local expected="${EXPECTED_HTTP_STATUS:-200}"
   local label="$4"
-  local elapsed=0
+  local deadline remaining curl_timeout status sleep_seconds
 
-  echo "Waiting for ${label}: ${url} (expect HTTP ${expected})"
-  while [[ "$elapsed" -le "$max_wait" ]]; do
-    local status
-    status="$(curl -sS -L -m 30 -o /dev/null -w '%{http_code}' "$url" || true)"
+  deadline=$(( $(monotonic_seconds) + max_wait ))
+  echo "Waiting for ${label}: ${url} (expect HTTP ${expected}, budget ${max_wait}s)"
+
+  while true; do
+    remaining=$(( deadline - $(monotonic_seconds) ))
+    if [[ "$remaining" -le 0 ]]; then
+      break
+    fi
+    curl_timeout=30
+    [[ "$curl_timeout" -le "$remaining" ]] || curl_timeout="$remaining"
+    status="$(curl -sS -L -m "$curl_timeout" -o /dev/null -w '%{http_code}' "$url" || true)"
     if [[ "$status" == "$expected" ]]; then
       echo "${label} passed with HTTP ${status}."
       return 0
     fi
-    echo "${label} returned HTTP ${status} (${elapsed}s / ${max_wait}s)."
-    if [[ "$elapsed" -ge "$max_wait" ]]; then
+    echo "${label} returned HTTP ${status} ($(( max_wait - remaining ))s / ${max_wait}s)."
+    remaining=$(( deadline - $(monotonic_seconds) ))
+    if [[ "$remaining" -le 0 ]]; then
       break
     fi
-    sleep "$poll_interval"
-    elapsed=$((elapsed + poll_interval))
+    sleep_seconds="$poll_interval"
+    [[ "$sleep_seconds" -le "$remaining" ]] || sleep_seconds="$remaining"
+    sleep "$sleep_seconds"
   done
-  echo "::error::${label} did not return HTTP ${expected}: ${url}"
+  echo "::error::${label} did not return HTTP ${expected} within ${max_wait}s: ${url}"
   exit 1
 }
 
@@ -177,6 +190,10 @@ cmd_promote() {
   local max_wait="${PROMOTION_MAX_WAIT_SECONDS:-900}"
   local poll_interval="${POLL_INTERVAL_SECONDS:-15}"
   local swap_request_timeout="${SWAP_REQUEST_TIMEOUT_SECONDS:-60}"
+  if ! [[ "$swap_request_timeout" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::SWAP_REQUEST_TIMEOUT_SECONDS must be a positive integer (got '${swap_request_timeout}')."
+    exit 1
+  fi
 
   local site_id access_token
   site_id="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query id --output tsv)"
@@ -192,10 +209,6 @@ cmd_promote() {
   auth_header="Authorization: Bearer ${access_token}"
   work_dir="$(mktemp -d)"
   trap 'rm -rf "$work_dir"' EXIT
-
-  monotonic_seconds() {
-    python3 -c 'import time; print(int(time.monotonic()))'
-  }
 
   local deadline_monotonic=0
   remaining_seconds() {
@@ -265,9 +278,9 @@ PY
     [[ "$remaining" -gt 0 ]] || return 0
     : >"$activity_file"
     if ! timeout --signal=TERM "${remaining}s" az monitor activity-log list \
-      --resource-id "$site_id" \
+      --resource-group "$RESOURCE_GROUP" \
       --start-time "$swap_lookback_at" \
-      --max-events 100 \
+      --max-events 200 \
       --output json >"$activity_file" 2>"$work_dir/activity-error"; then
       return 0
     fi

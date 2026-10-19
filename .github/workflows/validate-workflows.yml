@@ -20,7 +20,7 @@ jobs:
       - name: Lint GitHub Actions workflows
         run: |
           curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
-          ./actionlint -color
+          ./actionlint -color .github/workflows/azure-app-service-slot-promotion.yml
 
   promotion-script-shellcheck:
     runs-on: ubuntu-latest

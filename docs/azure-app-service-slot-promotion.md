@@ -8,7 +8,7 @@ Promotion logic lives in `.github/scripts/azure-app-service-slot-promotion.sh` (
 
 | Requirement | Detail |
 |-------------|--------|
-| GitHub Environment | Set on the **calling job** (`environment: prod`). OIDC secrets `CLIENT_ID`, `TENANT_ID`, `SUBSCRIPTION_ID` must exist on that environment. |
+| GitHub Environment | Pass required input `environment` (for example `prod`). The reusable job binds it for approval gates. OIDC secrets `CLIENT_ID`, `TENANT_ID`, `SUBSCRIPTION_ID` must exist on that environment. |
 | Azure RBAC | Identity can deploy to the staging slot and run `Microsoft.Web/sites/slots/slotsswap/action`. |
 | Terraform | `auto_swap_slot_name` must be **disabled** on the staging slot. AutoSwap drift fails preflight. |
 | Runner | Default `azure-linux-runner` when health endpoints are behind access restrictions. Use `ubuntu-latest` only when staging and production URLs are reachable from GitHub-hosted runners. |
@@ -25,6 +25,7 @@ jobs:
     needs: build
     uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-promotion.yml@main
     with:
+      environment: prod
       webapp-name: ${{ vars.WEBAPP_NAME }}
       resource-group: ${{ vars.RESOURCE_GROUP }}
       health-check-path: /api/health
@@ -37,14 +38,29 @@ jobs:
 
 ## Example caller (deploy package + promote)
 
+Build and upload the package in one job. The promotion job downloads the artifact (fresh runner).
+
 ```yaml
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./mvnw -DskipTests package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-package
+          path: target/*.jar
+
   release:
+    needs: build
     uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-promotion.yml@main
     with:
+      environment: prod
       webapp-name: ${{ vars.WEBAPP_NAME }}
       resource-group: ${{ vars.RESOURCE_GROUP }}
-      package-path: ./app.zip
+      package-artifact-name: app-package
+      package-artifact-filename: myapp.jar
       health-check-path: /actuator/health
       promotion-max-wait-seconds: 900
       smoke-test-url: https://example.com/api/health
