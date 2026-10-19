@@ -46,11 +46,22 @@ jobs:
           ALLOWLIST: ${{ inputs.production_environment_names }}
         run: |
           set -euo pipefail
-          normalized_env=$(echo "$ENV_NAME" | tr '[:upper:]' '[:lower:]' | xargs)
-          allowlist=$(echo "$ALLOWLIST" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+          trim_whitespace() {
+            local value="$1"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            printf '%s' "$value"
+          }
+          normalize_env_name() {
+            local value
+            value=$(trim_whitespace "$1")
+            printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+          }
+          normalized_env=$(normalize_env_name "$ENV_NAME")
           is_production=false
-          IFS=',' read -ra names <<< "$allowlist"
-          for name in "${names[@]}"; do
+          IFS=',' read -ra raw_names <<< "$ALLOWLIST"
+          for raw_name in "${raw_names[@]}"; do
+            name=$(normalize_env_name "$raw_name")
             if [ -n "$name" ] && [ "$normalized_env" = "$name" ]; then
               is_production=true
               break
