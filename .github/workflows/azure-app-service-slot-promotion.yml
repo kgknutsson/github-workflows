@@ -138,6 +138,9 @@ jobs:
     name: Promote ${{ inputs.webapp-name }}
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
+    concurrency:
+      group: app-service-promotion-${{ inputs.resource-group }}-${{ inputs.webapp-name }}
+      cancel-in-progress: false
     permissions:
       id-token: write
       contents: read

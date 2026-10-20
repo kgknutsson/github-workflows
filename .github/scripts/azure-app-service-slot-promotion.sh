@@ -129,7 +129,7 @@ wait_for_http() {
   local poll_interval="$3"
   local expected="${EXPECTED_HTTP_STATUS:-200}"
   local label="$4"
-  local deadline remaining curl_timeout status sleep_seconds
+  local deadline remaining curl_timeout status curl_exit sleep_seconds
 
   deadline=$(( $(monotonic_seconds) + max_wait ))
   echo "Waiting for ${label}: ${url} (expect HTTP ${expected}, budget ${max_wait}s)"
@@ -141,8 +141,11 @@ wait_for_http() {
     fi
     curl_timeout=30
     [[ "$curl_timeout" -le "$remaining" ]] || curl_timeout="$remaining"
-    status="$(curl -sS -L -m "$curl_timeout" -o /dev/null -w '%{http_code}' "$url" || true)"
-    if [[ "$status" == "$expected" ]]; then
+    set +e
+    status="$(curl -sS -m "$curl_timeout" -o /dev/null -w '%{http_code}' "$url")"
+    curl_exit=$?
+    set -e
+    if [[ "$curl_exit" -eq 0 && "$status" == "$expected" ]]; then
       echo "${label} passed with HTTP ${status}."
       return 0
     fi
@@ -353,7 +356,6 @@ PY
     local current_status="" current_activity_status=""
     while [[ "$(remaining_seconds)" -gt 0 ]]; do
       current_status="$(operation_status)"
-      current_activity_status="$(activity_status)"
 
       case "$current_status" in
         succeeded | success | completed)
@@ -367,6 +369,7 @@ PY
           ;;
       esac
 
+      current_activity_status="$(activity_status)"
       case "$current_activity_status" in
         succeeded | success | completed)
           echo "Azure activity logs confirmed the slot swap completed."

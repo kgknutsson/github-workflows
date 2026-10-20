@@ -72,9 +72,12 @@ http_health_ok() {
     curl_args=(-s -o /dev/null -w "%{http_code}" --max-time 15 -H "${header_name}: ${header_value}" "$url")
   fi
 
-  local status
-  status=$(curl "${curl_args[@]}" || true)
-  if [ "$status" = "$expected" ]; then
+  local status curl_exit
+  set +e
+  status=$(curl "${curl_args[@]}")
+  curl_exit=$?
+  set -e
+  if [ "$curl_exit" -eq 0 ] && [ "$status" = "$expected" ]; then
     echo "Health check passed (HTTP $status) at $url"
     return 0
   fi

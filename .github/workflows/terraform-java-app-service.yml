@@ -67,7 +67,7 @@ on:
 
 jobs:
   terraform:
-    # ITCO-1546: reach private tfstate from the GitHub hosted VNet runner.
+    # Reach private Terraform state from the VNet runner.
     runs-on: azure-linux-runner
     if: github.actor != 'dependabot[bot]'
     environment: ${{ inputs.environment }}

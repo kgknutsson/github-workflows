@@ -1,5 +1,7 @@
 # Copy into YOUR repository as .github/workflows/recover-slot-swap.yml (adjust names/secrets).
 # Scheduled cron MUST live here — not inside kgknutsson/github-workflows alone.
+# Pass repository variables here. A caller job cannot read environment-scoped variables
+# before the reusable job binds its GitHub Environment. Use one variable set per environment.
 #
 # Default: office hours every 2h on weekdays (UTC). Override cron below for your timezone.
 # Urgent runs: workflow_dispatch (branch rules in resolve job).
@@ -67,9 +69,9 @@ jobs:
     uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-swap-recovery-preflight.yml@dev
     with:
       environment: develop
-      webapp-name: ${{ vars.AZURE_WEBAPP_NAME }}
-      resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
-      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/readiness
+      webapp-name: ${{ vars.AZURE_WEBAPP_NAME_DEVELOP }}
+      resource-group: ${{ vars.AZURE_RESOURCE_GROUP_DEVELOP }}
+      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_DEVELOP }}.azurewebsites.net/api/readiness
       health-check-header-name: x-kgk-readiness-token
       scripts-ref: dev
     secrets:
@@ -85,9 +87,9 @@ jobs:
     uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-swap-recovery-preflight.yml@dev
     with:
       environment: test
-      webapp-name: ${{ vars.AZURE_WEBAPP_NAME }}
-      resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
-      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/readiness
+      webapp-name: ${{ vars.AZURE_WEBAPP_NAME_TEST }}
+      resource-group: ${{ vars.AZURE_RESOURCE_GROUP_TEST }}
+      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_TEST }}.azurewebsites.net/api/readiness
       health-check-header-name: x-kgk-readiness-token
       scripts-ref: dev
     secrets:
@@ -103,9 +105,9 @@ jobs:
     uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-swap-recovery-preflight.yml@dev
     with:
       environment: production
-      webapp-name: ${{ vars.AZURE_WEBAPP_NAME }}
-      resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
-      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/readiness
+      webapp-name: ${{ vars.AZURE_WEBAPP_NAME_PRODUCTION }}
+      resource-group: ${{ vars.AZURE_RESOURCE_GROUP_PRODUCTION }}
+      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_PRODUCTION }}.azurewebsites.net/api/readiness
       health-check-header-name: x-kgk-readiness-token
       scripts-ref: dev
     secrets:

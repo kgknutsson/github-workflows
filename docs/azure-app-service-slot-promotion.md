@@ -2,7 +2,7 @@
 
 Reusable workflow: `.github/workflows/azure-app-service-slot-promotion.yml`
 
-Promotion logic lives in `.github/scripts/azure-app-service-slot-promotion.sh` (ITCO-1417 / monorepo PR #1145 reference behavior).
+Promotion logic lives in `.github/scripts/azure-app-service-slot-promotion.sh`.
 
 For recovery metadata, cron wrappers, and guard patterns see [slot-swap-guards-and-recovery.md](slot-swap-guards-and-recovery.md).
 
@@ -25,6 +25,9 @@ Use when the caller already deployed to the staging slot:
 jobs:
   promote:
     needs: build
+    permissions:
+      id-token: write
+      contents: read
     uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-promotion.yml@dev
     with:
       environment: prod
@@ -56,6 +59,9 @@ jobs:
 
   release:
     needs: build
+    permissions:
+      id-token: write
+      contents: read
     uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-promotion.yml@dev
     with:
       environment: prod
