@@ -1,0 +1,121 @@
+# Credentialed Terraform plan. The caller owns the trigger and the GitHub Environment name.
+name: Terraform plan
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment and Terraform environment name
+        type: string
+        required: true
+      working_directory:
+        description: Directory that contains the Terraform configuration
+        type: string
+        required: false
+        default: terraform
+      backend_config:
+        description: Backend file relative to working_directory. Empty uses <environment>.tfbackend
+        type: string
+        required: false
+        default: ''
+      var_file:
+        description: Var file relative to working_directory. Empty uses <environment>.tfvars when that file exists
+        type: string
+        required: false
+        default: ''
+      pass_environment_var:
+        description: Also pass -var environment=<environment>
+        type: boolean
+        required: false
+        default: false
+      terraform_version:
+        type: string
+        required: false
+        default: '~1.14'
+      lock_timeout:
+        type: string
+        required: false
+        default: 5m
+      runner:
+        description: Use azure-linux-runner when state or providers are private
+        type: string
+        required: false
+        default: azure-linux-runner
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+
+jobs:
+  plan:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: terraform-${{ inputs.environment }}-${{ inputs.working_directory }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # tag: v4
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Terraform plan
+        shell: bash
+        env:
+          WORK_DIR: ${{ inputs.working_directory }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          BACKEND_CONFIG: ${{ inputs.backend_config }}
+          VAR_FILE: ${{ inputs.var_file }}
+          PASS_ENVIRONMENT_VAR: ${{ inputs.pass_environment_var }}
+          LOCK_TIMEOUT: ${{ inputs.lock_timeout }}
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_USE_OIDC: true
+          ARM_USE_AZUREAD: true
+          ARM_STORAGE_USE_AZUREAD: true
+          TF_IN_AUTOMATION: true
+        run: |
+          set -euo pipefail
+          if [ ! -d "$WORK_DIR" ]; then
+            echo "::error::Terraform directory not found: $WORK_DIR"
+            exit 1
+          fi
+          backend="${BACKEND_CONFIG:-${ENVIRONMENT}.tfbackend}"
+          if [ ! -f "$WORK_DIR/$backend" ]; then
+            echo "::error::Backend config not found: $WORK_DIR/$backend"
+            exit 1
+          fi
+          plan_args=(-input=false -lock-timeout="$LOCK_TIMEOUT" -no-color -out=tfplan)
+          if [ -n "$VAR_FILE" ]; then
+            if [ ! -f "$WORK_DIR/$VAR_FILE" ]; then
+              echo "::error::Var file not found: $WORK_DIR/$VAR_FILE"
+              exit 1
+            fi
+            plan_args+=(-var-file="$VAR_FILE")
+          elif [ -f "$WORK_DIR/${ENVIRONMENT}.tfvars" ]; then
+            plan_args+=(-var-file="${ENVIRONMENT}.tfvars")
+          fi
+          if [ "$PASS_ENVIRONMENT_VAR" = "true" ]; then
+            plan_args+=(-var="environment=${ENVIRONMENT}")
+          fi
+          terraform -chdir="$WORK_DIR" init -input=false -lock-timeout="$LOCK_TIMEOUT" -backend-config="$backend"
+          terraform -chdir="$WORK_DIR" plan "${plan_args[@]}"
+          {
+            echo "## Terraform plan (${ENVIRONMENT})"
+            echo '```'
+            terraform -chdir="$WORK_DIR" show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm -f "$WORK_DIR/tfplan"

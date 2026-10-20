@@ -11,6 +11,10 @@ Pin `@dev` or `@v4` and set matching `scripts-ref`.
 
 Callable preflight for slot-swap recovery metadata (and optional production health URL). Cron and full reconciliation stay in the consumer repo. See [docs/slot-swap-guards-and-recovery.md](docs/slot-swap-guards-and-recovery.md) and [docs/examples/recover-slot-swap-cron-wrapper.yml](docs/examples/recover-slot-swap-cron-wrapper.yml).
 
+## Terraform CI, plan, and apply
+
+`terraform-ci.yml`, `terraform-plan.yml`, and `terraform-apply.yml` are callable workflows. The caller owns triggers. See `docs/terraform-ci-plan-apply.md`.
+
 ## prod-deploy-slack-notify.yml
 
 Reusable workflow that posts Slack messages when a **production** GitHub Actions deployment starts and when it finishes (success or failure).
@@ -76,7 +80,7 @@ Call this workflow with `@dev` until tag `v4` moves to a commit that contains th
 
 ## terraform-java-app-service.yml
 
-Java GitOps deploy with optional `explicit_slot_swap` (inline health-gated swap) and `manage_deploy_slot_lifecycle`. Terraform apply runs on `azure-linux-runner` (ITCO-1546). For ARM-based promotion without inline swap, use `azure-app-service-slot-promotion.yml` instead.
+Java GitOps deploy with optional `explicit_slot_swap` (inline health-gated swap) and `manage_deploy_slot_lifecycle`. Terraform apply runs on `azure-linux-runner`. For ARM-based promotion without inline swap, use `azure-app-service-slot-promotion.yml` instead.
 
 ## java-testing-slot-deploy.yml
 
