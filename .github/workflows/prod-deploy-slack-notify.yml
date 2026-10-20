@@ -1,0 +1,178 @@
+name: Production deploy Slack notify
+
+on:
+  workflow_call:
+    inputs:
+      notification_phase:
+        type: string
+        required: true
+        description: >-
+          Use start before the deploy job and complete after the deploy job finishes.
+          Allowed values are start and complete.
+      environment:
+        type: string
+        required: true
+        description: GitHub Actions environment name for this deployment.
+      production_environment_names:
+        type: string
+        required: false
+        default: prod,production
+        description: >-
+          Comma-separated GitHub environment names that count as production.
+          Staging, test, and preview names are excluded unless listed here.
+      service_name:
+        type: string
+        required: true
+        description: Application or service name shown in the Slack message.
+      deployment_result:
+        type: string
+        required: false
+        description: >-
+          Job result from needs.<deploy-job>.result when notification_phase is complete.
+          Typical values are success, failure, cancelled, or skipped.
+    secrets:
+      PRODUCTION_DEPLOY_SLACK_WEBHOOK_URL:
+        required: true
+        description: Incoming webhook URL for the production-deploys Slack channel.
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve production gate
+        id: gate
+        env:
+          ENV_NAME: ${{ inputs.environment }}
+          ALLOWLIST: ${{ inputs.production_environment_names }}
+        run: |
+          set -euo pipefail
+          trim_whitespace() {
+            local value="$1"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            printf '%s' "$value"
+          }
+          normalize_env_name() {
+            local value
+            value=$(trim_whitespace "$1")
+            printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+          }
+          normalized_env=$(normalize_env_name "$ENV_NAME")
+          is_production=false
+          IFS=',' read -ra raw_names <<< "$ALLOWLIST"
+          for raw_name in "${raw_names[@]}"; do
+            name=$(normalize_env_name "$raw_name")
+            if [ -n "$name" ] && [ "$normalized_env" = "$name" ]; then
+              is_production=true
+              break
+            fi
+          done
+          echo "is_production=$is_production" >> "$GITHUB_OUTPUT"
+          if [ "$is_production" != "true" ]; then
+            echo "Skipping Slack notification for non-production environment: $ENV_NAME"
+          fi
+
+      - name: Validate notification inputs
+        if: steps.gate.outputs.is_production == 'true'
+        env:
+          PHASE: ${{ inputs.notification_phase }}
+          RESULT: ${{ inputs.deployment_result }}
+        run: |
+          set -euo pipefail
+          case "$PHASE" in
+            start|complete) ;;
+            *)
+              echo "::error::notification_phase must be start or complete"
+              exit 1
+              ;;
+          esac
+          if [ "$PHASE" = "complete" ] && [ -z "$RESULT" ]; then
+            echo "::error::deployment_result is required when notification_phase is complete"
+            exit 1
+          fi
+
+      - name: Build Slack payload
+        if: steps.gate.outputs.is_production == 'true'
+        env:
+          PHASE: ${{ inputs.notification_phase }}
+          RESULT: ${{ inputs.deployment_result }}
+          SERVICE: ${{ inputs.service_name }}
+          ENV_NAME: ${{ inputs.environment }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$PHASE" = "start" ]; then
+            headline=":rocket: Production deploy started"
+            detail="Deploy is in progress."
+          else
+            case "$RESULT" in
+              success)
+                headline=":white_check_mark: Production deploy succeeded"
+                detail="Deploy finished successfully."
+                ;;
+              failure)
+                headline=":x: Production deploy failed"
+                detail="Deploy finished with errors."
+                ;;
+              cancelled)
+                headline=":warning: Production deploy cancelled"
+                detail="Deploy was cancelled."
+                ;;
+              skipped)
+                headline=":fast_forward: Production deploy skipped"
+                detail="Deploy job did not run."
+                ;;
+              *)
+                headline=":grey_question: Production deploy finished"
+                detail="Deploy finished with result: $RESULT"
+                ;;
+            esac
+          fi
+          jq -n \
+            --arg headline "$headline" \
+            --arg detail "$detail" \
+            --arg service "$SERVICE" \
+            --arg env "$ENV_NAME" \
+            --arg repo "$REPOSITORY" \
+            --arg run_url "$RUN_URL" \
+            '{
+              text: ($headline + " — " + $service),
+              blocks: [
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: ($headline + "\n" + $detail)
+                  }
+                },
+                {
+                  type: "section",
+                  fields: [
+                    { type: "mrkdwn", text: ("*Service*\n" + $service) },
+                    { type: "mrkdwn", text: ("*Environment*\n" + $env) },
+                    { type: "mrkdwn", text: ("*Repository*\n" + $repo) }
+                  ]
+                },
+                {
+                  type: "actions",
+                  elements: [
+                    {
+                      type: "button",
+                      text: { type: "plain_text", text: "View workflow run", emoji: true },
+                      url: $run_url
+                    }
+                  ]
+                }
+              ]
+            }' > slack-payload.json
+
+      - name: Post to Slack
+        if: steps.gate.outputs.is_production == 'true'
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # tag: v4.0.0
+        with:
+          webhook: ${{ secrets.PRODUCTION_DEPLOY_SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload-file-path: slack-payload.json
