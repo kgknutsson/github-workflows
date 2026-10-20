@@ -1,0 +1,46 @@
+# Credential-free Terraform checks. The caller owns pull_request and path filters.
+name: Terraform CI
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: Directory that contains the Terraform configuration
+        type: string
+        required: false
+        default: terraform
+      terraform_version:
+        description: Version passed to hashicorp/setup-terraform
+        type: string
+        required: false
+        default: '~1.14'
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # tag: v4
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Format, init, and validate
+        shell: bash
+        env:
+          WORK_DIR: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$WORK_DIR" ]; then
+            echo "::error::Terraform directory not found: $WORK_DIR"
+            exit 1
+          fi
+          terraform -chdir="$WORK_DIR" fmt -check -recursive -diff
+          terraform -chdir="$WORK_DIR" init -input=false -backend=false
+          terraform -chdir="$WORK_DIR" validate
