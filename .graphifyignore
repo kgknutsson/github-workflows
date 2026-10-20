@@ -1,0 +1,2 @@
+# Graphify: skip nested git worktrees (indexed from main checkout only)
+worktrees/
