@@ -88,6 +88,7 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_USE_OIDC: true
+          ARM_USE_AZUREAD: true
           ARM_STORAGE_USE_AZUREAD: true
           TF_IN_AUTOMATION: true
         run: |
@@ -110,9 +111,6 @@ jobs:
             plan_args+=(-var-file="$VAR_FILE")
           elif [ -f "$WORK_DIR/${ENVIRONMENT}.tfvars" ]; then
             plan_args+=(-var-file="${ENVIRONMENT}.tfvars")
-          elif [ "$PASS_ENVIRONMENT_VAR" != "true" ]; then
-            echo "::error::No var file. Set var_file or pass_environment_var."
-            exit 1
           fi
           if [ "$PASS_ENVIRONMENT_VAR" = "true" ]; then
             plan_args+=(-var="environment=${ENVIRONMENT}")
@@ -161,10 +159,23 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_USE_OIDC: true
+          ARM_USE_AZUREAD: true
           ARM_STORAGE_USE_AZUREAD: true
         run: |
           set -euo pipefail
           terraform -chdir="$WORK_DIR" output -json > "$WORK_DIR/terraform-output.json"
+          python3 - "$WORK_DIR/terraform-output.json" <<'PY'
+          import json
+          import sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as handle:
+              data = json.load(handle)
+          for item in data.values():
+              if isinstance(item, dict) and item.get("sensitive") is True:
+                  item["value"] = None
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(data, handle)
+          PY
 
       - name: Save Terraform output data
         if: inputs.upload_outputs

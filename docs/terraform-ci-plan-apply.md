@@ -33,7 +33,9 @@ secrets:
 
 Empty `backend_config` uses `<environment>.tfbackend` inside `working_directory`.
 
-Empty `var_file` uses `<environment>.tfvars` when that file exists. Set `pass_environment_var: true` to also pass `-var environment=<environment>`.
+Empty `var_file` uses `<environment>.tfvars` when that file exists. When that file is absent, Terraform uses its own defaults and `*.auto.tfvars`. Set `pass_environment_var: true` to also pass `-var environment=<environment>`.
+
+State access uses Azure AD. Set `use_azuread_auth` in the backend, or rely on `ARM_USE_AZUREAD`. Do not use a storage account key.
 
 ## Caller examples
 
@@ -60,6 +62,9 @@ on:
         type: string
 jobs:
   plan:
+    permissions:
+      id-token: write
+      contents: read
     uses: kgknutsson/github-workflows/.github/workflows/terraform-plan.yml@dev
     with:
       environment: ${{ inputs.environment }}
@@ -77,6 +82,9 @@ on:
         type: string
 jobs:
   apply:
+    permissions:
+      id-token: write
+      contents: read
     uses: kgknutsson/github-workflows/.github/workflows/terraform-apply.yml@dev
     with:
       environment: ${{ inputs.environment }}
@@ -90,7 +98,7 @@ Plan and apply use the same concurrency group, `terraform-<environment>-<working
 
 Apply retries the plan up to 10 times when the state lock is busy, then applies that saved plan.
 
-Set `upload_outputs: true` on apply to upload `terraform output -json` as artifact `terraform-output`.
+Set `upload_outputs: true` on apply to upload `terraform output -json` as artifact `terraform-output`. Sensitive output values are removed before upload. The artifact remains readable by repository readers.
 
 ## What stays separate
 

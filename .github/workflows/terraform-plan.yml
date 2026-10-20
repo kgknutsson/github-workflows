@@ -83,6 +83,7 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_USE_OIDC: true
+          ARM_USE_AZUREAD: true
           ARM_STORAGE_USE_AZUREAD: true
           TF_IN_AUTOMATION: true
         run: |
@@ -105,9 +106,6 @@ jobs:
             plan_args+=(-var-file="$VAR_FILE")
           elif [ -f "$WORK_DIR/${ENVIRONMENT}.tfvars" ]; then
             plan_args+=(-var-file="${ENVIRONMENT}.tfvars")
-          elif [ "$PASS_ENVIRONMENT_VAR" != "true" ]; then
-            echo "::error::No var file. Set var_file or pass_environment_var."
-            exit 1
           fi
           if [ "$PASS_ENVIRONMENT_VAR" = "true" ]; then
             plan_args+=(-var="environment=${ENVIRONMENT}")
