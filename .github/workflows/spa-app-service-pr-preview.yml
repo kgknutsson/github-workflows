@@ -144,16 +144,14 @@ jobs:
               --slot "$SLOT_NAME" \
               --configuration-source "$WEBAPP_NAME"
           fi
-          az webapp deployment slot auto-swap disable \
+          az webapp deployment slot auto-swap \
             --name "$WEBAPP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
-            --slot "$SLOT_NAME"
+            --slot "$SLOT_NAME" \
+            --disable
           if [ "$ENABLE_PUBLIC_NETWORK" = "true" ]; then
-            az resource update \
-              --resource-group "$RESOURCE_GROUP" \
-              --name "${WEBAPP_NAME}/slots/${SLOT_NAME}" \
-              --resource-type "Microsoft.Web/sites/slots" \
-              --set properties.publicNetworkAccess=Enabled >/dev/null
+            slot_id="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query id -o tsv)"
+            az resource update --ids "$slot_id" --set properties.publicNetworkAccess=Enabled >/dev/null
           fi
           if [ "$DISABLE_EASY_AUTH" = "true" ]; then
             if ! az webapp auth update \
