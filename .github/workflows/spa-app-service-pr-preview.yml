@@ -1,0 +1,261 @@
+# Build a SPA and zip-deploy it to one non-production slot.
+# The caller owns pull_request, path filters, and the pull request comment.
+name: SPA App Service pull request preview
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment for Azure OIDC
+        type: string
+        required: true
+      webapp_name:
+        description: Existing App Service name. This workflow does not read Terraform output
+        type: string
+        required: true
+      resource_group:
+        type: string
+        required: true
+      slot_name:
+        description: Preview slot name, for example pr-123. Must not be production or staging
+        type: string
+        required: true
+      node_version:
+        type: string
+        required: false
+        default: "24"
+      package_manager:
+        description: Cache key for setup-node. Use npm, yarn, or pnpm
+        type: string
+        required: false
+        default: yarn
+      install_command:
+        type: string
+        required: false
+        default: yarn install --frozen-lockfile
+      build_command:
+        type: string
+        required: false
+        default: yarn build
+      build_env_json:
+        description: JSON object of public build-time variables. Do not put secrets in this value
+        type: string
+        required: false
+        default: "{}"
+      output_directory:
+        type: string
+        required: false
+        default: dist
+      health_path:
+        description: Path to probe after deploy. Empty skips the probe
+        type: string
+        required: false
+        default: /health
+      enable_public_network:
+        type: boolean
+        required: false
+        default: true
+      disable_easy_auth:
+        description: Set true when the app uses its own sign-in instead of Easy Auth
+        type: boolean
+        required: false
+        default: false
+      runner:
+        type: string
+        required: false
+        default: ubuntu-latest
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+    outputs:
+      slot_hostname:
+        description: Slot hostname without a scheme
+        value: ${{ jobs.preview.outputs.slot_hostname }}
+      slot_url:
+        description: https URL of the slot
+        value: ${{ jobs.preview.outputs.slot_url }}
+
+jobs:
+  preview:
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
+    concurrency:
+      group: spa-preview-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      slot_hostname: ${{ steps.publish.outputs.slot_hostname }}
+      slot_url: ${{ steps.publish.outputs.slot_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # tag: v6
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create the preview slot when it is missing
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SLOT_NAME: ${{ inputs.slot_name }}
+          ENABLE_PUBLIC_NETWORK: ${{ inputs.enable_public_network }}
+          DISABLE_EASY_AUTH: ${{ inputs.disable_easy_auth }}
+        run: |
+          set -euo pipefail
+          if [ "$SLOT_NAME" = "production" ] || [ "$SLOT_NAME" = "staging" ]; then
+            echo "::error::slot_name must name a preview slot."
+            exit 1
+          fi
+          if ! printf '%s' "$SLOT_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{0,58}$'; then
+            echo "::error::slot_name may contain only lowercase letters, numbers, and hyphens."
+            exit 1
+          fi
+          existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
+          if [ "$existing" != "$SLOT_NAME" ]; then
+            slot_count="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "length(@)" -o tsv)"
+            if [ "$slot_count" -ge 20 ]; then
+              echo "::error::This web app already has ${slot_count} deployment slots."
+              exit 1
+            fi
+            if [ "$slot_count" -ge 15 ]; then
+              echo "::warning::This web app has ${slot_count} deployment slots."
+            fi
+            az webapp deployment slot create \
+              --name "$WEBAPP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --slot "$SLOT_NAME" \
+              --configuration-source "$WEBAPP_NAME"
+          fi
+          az webapp deployment slot auto-swap disable \
+            --name "$WEBAPP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --slot "$SLOT_NAME"
+          if [ "$ENABLE_PUBLIC_NETWORK" = "true" ]; then
+            az resource update \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "${WEBAPP_NAME}/slots/${SLOT_NAME}" \
+              --resource-type "Microsoft.Web/sites/slots" \
+              --set properties.publicNetworkAccess=Enabled >/dev/null
+          fi
+          if [ "$DISABLE_EASY_AUTH" = "true" ]; then
+            if ! az webapp auth update \
+              --name "$WEBAPP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --slot "$SLOT_NAME" \
+              --enabled false \
+              --yes >/dev/null; then
+              echo "::warning::Easy Auth was not updated on ${SLOT_NAME}."
+            fi
+          fi
+
+      - name: Export build environment
+        shell: bash
+        env:
+          BUILD_ENV_JSON: ${{ inputs.build_env_json }}
+        run: |
+          set -euo pipefail
+          python3 - "$BUILD_ENV_JSON" "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+          raw, path = sys.argv[1], sys.argv[2]
+          data = json.loads(raw)
+          if not isinstance(data, dict):
+              raise SystemExit("build_env_json must be a JSON object")
+          with open(path, "a", encoding="utf-8") as handle:
+              for key, value in data.items():
+                  if not isinstance(key, str) or not key.replace("_", "").isalnum():
+                      raise SystemExit(f"unsupported build env name: {key}")
+                  text = "" if value is None else str(value)
+                  if "\n" in text or "\r" in text:
+                      raise SystemExit(f"unsupported build env value: {key}")
+                  handle.write(f"{key}={text}\n")
+          PY
+
+      - name: Install and build
+        shell: bash
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
+          BUILD_COMMAND: ${{ inputs.build_command }}
+        run: |
+          set -euo pipefail
+          bash -c "$INSTALL_COMMAND"
+          bash -c "$BUILD_COMMAND"
+
+      - name: Zip-deploy the build
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SLOT_NAME: ${{ inputs.slot_name }}
+          OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$OUTPUT_DIRECTORY" ]; then
+            echo "::error::Build output directory was not found: $OUTPUT_DIRECTORY"
+            exit 1
+          fi
+          (cd "$OUTPUT_DIRECTORY" && zip -qr "$RUNNER_TEMP/deploy.zip" .)
+          az webapp deploy \
+            --name "$WEBAPP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --slot "$SLOT_NAME" \
+            --src-path "$RUNNER_TEMP/deploy.zip" \
+            --type zip
+
+      - name: Publish the slot hostname
+        id: publish
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SLOT_NAME: ${{ inputs.slot_name }}
+          HEALTH_PATH: ${{ inputs.health_path }}
+        run: |
+          set -euo pipefail
+          host="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query defaultHostName -o tsv)"
+          if [ -z "$host" ]; then
+            echo "::error::Azure did not return a slot hostname."
+            exit 1
+          fi
+          echo "slot_hostname=$host" >> "$GITHUB_OUTPUT"
+          echo "slot_url=https://$host" >> "$GITHUB_OUTPUT"
+          if [ -z "$HEALTH_PATH" ]; then
+            exit 0
+          fi
+          case "$HEALTH_PATH" in
+            /*) path="$HEALTH_PATH" ;;
+            *) path="/$HEALTH_PATH" ;;
+          esac
+          url="https://${host}${path}"
+          deadline=$((SECONDS + 120))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            set +e
+            status="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "$url")"
+            curl_exit=$?
+            set -e
+            if [ "$curl_exit" -eq 0 ] && [ "$status" = "200" ]; then
+              echo "Health check passed for $url"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Health check did not return HTTP 200: $url"
+          exit 1

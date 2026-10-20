@@ -1,0 +1,151 @@
+# Delete one preview slot and the pull request comment that marks it.
+# The caller owns pull_request closed. This workflow does not swap slots.
+name: SPA App Service preview cleanup
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      webapp_name:
+        type: string
+        required: true
+      resource_group:
+        type: string
+        required: true
+      slot_name:
+        type: string
+        required: true
+      pr_number:
+        type: string
+        required: true
+      comment_marker:
+        description: Delete pull request comments that contain this marker
+        type: string
+        required: false
+        default: "<!-- pr-preview-webapp -->"
+      entra_app_id:
+        description: When set, remove redirect URIs that contain pr-<number>
+        type: string
+        required: false
+        default: ""
+      runner:
+        type: string
+        required: false
+        default: ubuntu-latest
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+
+jobs:
+  cleanup:
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 20
+    concurrency:
+      group: spa-preview-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete the preview slot
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SLOT_NAME: ${{ inputs.slot_name }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          ENTRA_APP_ID: ${{ inputs.entra_app_id }}
+        run: |
+          set -euo pipefail
+          if [ "$SLOT_NAME" = "production" ] || [ "$SLOT_NAME" = "staging" ]; then
+            echo "::error::slot_name must name a preview slot."
+            exit 1
+          fi
+          if ! az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query name -o tsv >/dev/null; then
+            echo "Web app was not found. Nothing to delete."
+          else
+            existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
+            if [ "$existing" = "$SLOT_NAME" ]; then
+              az webapp deployment slot delete \
+                --name "$WEBAPP_NAME" \
+                --resource-group "$RESOURCE_GROUP" \
+                --slot "$SLOT_NAME"
+            else
+              echo "Slot $SLOT_NAME was not found."
+            fi
+          fi
+          if [ -z "$ENTRA_APP_ID" ]; then
+            exit 0
+          fi
+          current="$(az ad app show --id "$ENTRA_APP_ID" --query "web.redirectUris" -o json)"
+          if [ -z "$current" ] || [ "$current" = "null" ]; then
+            current="[]"
+          fi
+          filtered="$(printf '%s' "$current" | jq -c --arg token "pr-${PR_NUMBER}." '[.[] | select(contains($token) | not)]')"
+          if [ "$(printf '%s' "$current" | jq -c 'sort')" = "$(printf '%s' "$filtered" | jq -c 'sort')" ]; then
+            echo "No matching redirect URIs."
+            exit 0
+          fi
+          if [ "$filtered" = "[]" ]; then
+            az ad app update --id "$ENTRA_APP_ID" --set web.redirectUris=[]
+          else
+            mapfile -t uris < <(printf '%s' "$filtered" | jq -r '.[]')
+            az ad app update --id "$ENTRA_APP_ID" --web-redirect-uris "${uris[@]}"
+          fi
+
+      - name: Delete the preview comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          COMMENT_MARKER: ${{ inputs.comment_marker }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          marker = os.environ["COMMENT_MARKER"]
+          repo = os.environ["REPO"]
+          number = os.environ["PR_NUMBER"]
+          token = os.environ["GH_TOKEN"]
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/issues/{number}/comments?per_page=100",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+              },
+          )
+          with urllib.request.urlopen(request) as response:
+              comments = json.load(response)
+          for comment in comments:
+              if marker not in (comment.get("body") or ""):
+                  continue
+              delete = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/issues/comments/{comment['id']}",
+                  method="DELETE",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                  },
+              )
+              with urllib.request.urlopen(delete):
+                  print(f"Deleted comment {comment['id']}")
+          PY
