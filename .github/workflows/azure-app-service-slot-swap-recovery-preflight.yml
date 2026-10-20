@@ -1,0 +1,128 @@
+name: Azure App Service slot swap recovery preflight
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment for OIDC secrets.
+        type: string
+        required: true
+      webapp-name:
+        description: Azure Web App name (production slot).
+        type: string
+        required: true
+      resource-group:
+        description: Resource group containing the web app.
+        type: string
+        required: true
+      health-check-url:
+        description: >-
+          Production URL for idle-state health probe when recovery metadata is clear.
+          Required for accurate skip behavior on scheduled runs.
+        type: string
+        required: true
+      expected-http-status:
+        type: string
+        required: false
+        default: '200'
+      health-check-header-name:
+        description: Optional HTTP header name (for example x-kgk-readiness-token).
+        type: string
+        required: false
+        default: ''
+      health-check-attempts:
+        type: number
+        required: false
+        default: 3
+      recovery-state-setting:
+        type: string
+        required: false
+        default: KGK_SLOT_SWAP_RECOVERY_STATE
+      run-id-setting:
+        type: string
+        required: false
+        default: KGK_SLOT_SWAP_RUN_ID
+      scripts-ref:
+        description: Git ref of kgknutsson/github-workflows to load guard scripts from.
+        type: string
+        required: false
+        default: dev
+      runner:
+        description: Runner label (use azure-linux-runner when health endpoints are private).
+        type: string
+        required: false
+        default: azure-linux-runner
+    secrets:
+      CLIENT_ID:
+        required: true
+      TENANT_ID:
+        required: true
+      SUBSCRIPTION_ID:
+        required: true
+      HEALTH_CHECK_HEADER_VALUE:
+        description: Optional secret value paired with health-check-header-name.
+        required: false
+    outputs:
+      recovery-needed:
+        description: >-
+          true when metadata or health indicates reconciliation work may be required.
+        value: ${{ jobs.preflight.outputs.recovery-needed }}
+
+jobs:
+  preflight:
+    name: Preflight ${{ inputs.webapp-name }}
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      recovery-needed: ${{ steps.evaluate.outputs.recovery-needed }}
+    steps:
+      - name: Checkout guard scripts
+        uses: actions/checkout@v4
+        with:
+          repository: kgknutsson/github-workflows
+          ref: ${{ inputs.scripts-ref }}
+          path: kgk-github-workflows
+          sparse-checkout: |
+            .github/scripts/azure-app-service-slot-swap-guards.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+
+      - name: Evaluate recovery preflight
+        id: evaluate
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          HEALTH_CHECK_URL: ${{ inputs.health-check-url }}
+          EXPECTED_HTTP_STATUS: ${{ inputs.expected-http-status }}
+          HEALTH_CHECK_HEADER_NAME: ${{ inputs.health-check-header-name }}
+          HEALTH_CHECK_HEADER_VALUE: ${{ secrets.HEALTH_CHECK_HEADER_VALUE }}
+          HEALTH_CHECK_ATTEMPTS: ${{ inputs.health-check-attempts }}
+          RECOVERY_STATE_SETTING: ${{ inputs.recovery-state-setting }}
+          RUN_ID_SETTING: ${{ inputs.run-id-setting }}
+        run: |
+          set -euo pipefail
+          result=$(bash kgk-github-workflows/.github/scripts/azure-app-service-slot-swap-guards.sh scheduled-preflight | tail -n1)
+          case "$result" in
+            scheduled-preflight-needed=true)
+              echo "recovery-needed=true" >> "$GITHUB_OUTPUT"
+              echo "Recovery preflight: work may be required."
+              ;;
+            scheduled-preflight-needed=false)
+              echo "recovery-needed=false" >> "$GITHUB_OUTPUT"
+              echo "Recovery preflight: idle; skip full reconciliation."
+              ;;
+            *)
+              echo "::error::Unexpected preflight result: $result"
+              exit 1
+              ;;
+          esac
