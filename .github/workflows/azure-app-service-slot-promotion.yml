@@ -109,10 +109,10 @@ on:
         required: false
         default: 60
       scripts-ref:
-        description: Git ref of kgknutsson/github-workflows to load promotion scripts from.
+        description: Git ref of kgknutsson/github-workflows to load promotion scripts from (pin to dev or v4).
         type: string
         required: false
-        default: main
+        default: dev
       runner:
         description: Runner label (use azure-linux-runner when health endpoints are private).
         type: string

@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - main
+      - dev
     paths:
       - '.github/workflows/**'
       - '.github/scripts/**'
@@ -20,11 +21,15 @@ jobs:
       - name: Lint GitHub Actions workflows
         run: |
           curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
-          ./actionlint -color .github/workflows/azure-app-service-slot-promotion.yml
+          ./actionlint -color \
+            .github/workflows/azure-app-service-slot-promotion.yml \
+            .github/workflows/azure-app-service-slot-swap-recovery-preflight.yml
 
   promotion-script-shellcheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify promotion script passes bash -n
-        run: bash -n .github/scripts/azure-app-service-slot-promotion.sh
+      - name: Verify promotion and guard scripts pass bash -n
+        run: |
+          bash -n .github/scripts/azure-app-service-slot-promotion.sh
+          bash -n .github/scripts/azure-app-service-slot-swap-guards.sh

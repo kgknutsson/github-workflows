@@ -1,0 +1,187 @@
+# Copy into YOUR repository as .github/workflows/recover-slot-swap.yml (adjust names/secrets).
+# Scheduled cron MUST live here — not inside kgknutsson/github-workflows alone.
+#
+# Default: office hours every 2h on weekdays (UTC). Override cron below for your timezone.
+# Urgent runs: workflow_dispatch (branch rules in resolve job).
+
+name: Recover interrupted slot swap
+
+on:
+  schedule:
+    - cron: '0 6,8,10,12,14,16 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+jobs:
+  resolve-recovery-environments:
+    name: Resolve recovery environments
+    runs-on: ubuntu-latest
+    outputs:
+      run_develop: ${{ steps.resolve.outputs.run_develop }}
+      run_test: ${{ steps.resolve.outputs.run_test }}
+      run_production: ${{ steps.resolve.outputs.run_production }}
+      dispatch_environments: ${{ steps.resolve.outputs.dispatch_environments }}
+    steps:
+      - name: Resolve recovery targets
+        id: resolve
+        shell: bash
+        run: |
+          run_develop=false
+          run_test=false
+          run_production=false
+          dispatch_environments='[]'
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            run_develop=true
+            run_test=true
+            run_production=true
+          else
+            case "$GITHUB_REF_NAME" in
+              develop)
+                run_develop=true
+                dispatch_environments='["develop"]'
+                ;;
+              test)
+                run_test=true
+                dispatch_environments='["test"]'
+                ;;
+              main)
+                run_production=true
+                dispatch_environments='["production"]'
+                ;;
+              *) echo "::error::Manual recovery only from develop, test, or main."; exit 1 ;;
+            esac
+          fi
+          echo "run_develop=$run_develop" >> "$GITHUB_OUTPUT"
+          echo "run_test=$run_test" >> "$GITHUB_OUTPUT"
+          echo "run_production=$run_production" >> "$GITHUB_OUTPUT"
+          echo "dispatch_environments=$dispatch_environments" >> "$GITHUB_OUTPUT"
+
+  preflight-develop:
+    name: Preflight develop
+    needs: resolve-recovery-environments
+    if: needs.resolve-recovery-environments.outputs.run_develop == 'true'
+    uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-swap-recovery-preflight.yml@dev
+    with:
+      environment: develop
+      webapp-name: ${{ vars.AZURE_WEBAPP_NAME }}
+      resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/readiness
+      health-check-header-name: x-kgk-readiness-token
+      scripts-ref: dev
+    secrets:
+      CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      HEALTH_CHECK_HEADER_VALUE: ${{ secrets.SLOT_SWAP_HEALTH_TOKEN }}
+
+  preflight-test:
+    name: Preflight test
+    needs: resolve-recovery-environments
+    if: needs.resolve-recovery-environments.outputs.run_test == 'true'
+    uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-swap-recovery-preflight.yml@dev
+    with:
+      environment: test
+      webapp-name: ${{ vars.AZURE_WEBAPP_NAME }}
+      resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/readiness
+      health-check-header-name: x-kgk-readiness-token
+      scripts-ref: dev
+    secrets:
+      CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      HEALTH_CHECK_HEADER_VALUE: ${{ secrets.SLOT_SWAP_HEALTH_TOKEN }}
+
+  preflight-production:
+    name: Preflight production
+    needs: resolve-recovery-environments
+    if: needs.resolve-recovery-environments.outputs.run_production == 'true'
+    uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-swap-recovery-preflight.yml@dev
+    with:
+      environment: production
+      webapp-name: ${{ vars.AZURE_WEBAPP_NAME }}
+      resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+      health-check-url: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net/api/readiness
+      health-check-header-name: x-kgk-readiness-token
+      scripts-ref: dev
+    secrets:
+      CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      HEALTH_CHECK_HEADER_VALUE: ${{ secrets.SLOT_SWAP_HEALTH_TOKEN }}
+
+  plan-scheduled-recoveries:
+    name: Plan scheduled recoveries
+    if: |
+      always() &&
+      !cancelled() &&
+      github.event_name == 'schedule' &&
+      needs.resolve-recovery-environments.result == 'success'
+    needs:
+      - resolve-recovery-environments
+      - preflight-develop
+      - preflight-test
+      - preflight-production
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.plan.outputs.environments }}
+    steps:
+      - name: Aggregate environments needing recovery
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          environments='[]'
+          add_if_needed() {
+            local env="$1"
+            local job_result="$2"
+            local recovery_needed="$3"
+            if [ "$job_result" = "skipped" ]; then
+              return
+            fi
+            if [ "$job_result" != "success" ]; then
+              echo "::warning::Preflight for $env did not succeed; scheduling recovery to stay safe."
+              environments=$(jq -c --arg env "$env" '. + [$env]' <<< "$environments")
+              return
+            fi
+            if [ "$recovery_needed" = "true" ]; then
+              environments=$(jq -c --arg env "$env" '. + [$env]' <<< "$environments")
+            fi
+          }
+          add_if_needed develop "${{ needs.preflight-develop.result }}" "${{ needs.preflight-develop.outputs.recovery-needed }}"
+          add_if_needed test "${{ needs.preflight-test.result }}" "${{ needs.preflight-test.outputs.recovery-needed }}"
+          add_if_needed production "${{ needs.preflight-production.result }}" "${{ needs.preflight-production.outputs.recovery-needed }}"
+          echo "environments=$environments" >> "$GITHUB_OUTPUT"
+
+  recover:
+    name: Recover ${{ matrix.environment }} slot swap
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.resolve-recovery-environments.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'schedule' &&
+          needs.plan-scheduled-recoveries.result == 'success' &&
+          needs.plan-scheduled-recoveries.outputs.environments != '[]'
+        )
+      )
+    needs:
+      - resolve-recovery-environments
+      - plan-scheduled-recoveries
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(github.event_name == 'schedule' && needs.plan-scheduled-recoveries.outputs.environments || needs.resolve-recovery-environments.outputs.dispatch_environments) }}
+    runs-on: azure-linux-runner
+    environment: ${{ matrix.environment }}
+    steps:
+      - name: Run app recovery reconciliation
+        run: |
+          echo "::error::Replace with checkout + slot-swap-recovery.sh from YOUR repo (see ecom-cv-site-frontend recover-slot-swap.yml)."
+          exit 1
