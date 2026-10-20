@@ -67,7 +67,8 @@ on:
 
 jobs:
   terraform:
-    runs-on: ubuntu-latest
+    # Reach private Terraform state from the GitHub hosted VNet runner.
+    runs-on: azure-linux-runner
     if: github.actor != 'dependabot[bot]'
     environment: ${{ inputs.environment }}
     permissions:
