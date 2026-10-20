@@ -45,7 +45,7 @@ Call twice from a deploy workflow: once at start and once after the deploy job w
 jobs:
   slack-notify-start:
     if: github.actor != 'dependabot[bot]'
-    uses: kgknutsson/github-workflows/.github/workflows/prod-deploy-slack-notify.yml@v4
+    uses: kgknutsson/github-workflows/.github/workflows/prod-deploy-slack-notify.yml@dev
     with:
       notification_phase: start
       environment: prod
@@ -60,7 +60,7 @@ jobs:
   slack-notify-complete:
     needs: deploy
     if: always() && !cancelled() && needs.deploy.result != 'skipped'
-    uses: kgknutsson/github-workflows/.github/workflows/prod-deploy-slack-notify.yml@v4
+    uses: kgknutsson/github-workflows/.github/workflows/prod-deploy-slack-notify.yml@dev
     with:
       notification_phase: complete
       environment: prod
@@ -71,6 +71,8 @@ jobs:
 ```
 
 Use the same `environment` value as the GitHub `environment:` on the deploy job. Preview and staging jobs should use different environment names so this workflow stays silent.
+
+Call this workflow with `@dev` until tag `v4` moves to a commit that contains this file. After that, pin the caller to the full commit SHA. The Slack action in this workflow is already pinned to commit `dcb1066f776dd043e64d0e8ba94ca15cc7e1875d` (`v4.0.0`). This job uses `ubuntu-latest` because it only posts a webhook.
 
 ## terraform-java-app-service.yml
 
