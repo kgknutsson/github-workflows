@@ -4,72 +4,79 @@ Three callable workflows. The caller repository owns `on:`, path filters, and th
 
 | Workflow | Purpose |
 | --- | --- |
-| `spa-app-service-pr-preview.yml` | Create the preview slot when it is missing, build, zip-deploy, return the hostname |
+| `spa-app-service-pr-preview.yml` | Provision slot, optional caller prepare script, build, SCM wait, zip-deploy retries, HTTP verify |
 | `spa-app-service-pr-preview-cleanup.yml` | Delete one preview slot and the preview comment |
 | `spa-app-service-pr-preview-orphan-cleanup.yml` | Delete `pr-*` slots whose pull request is not open |
 
-A deployment slot uses the parent web app's App Service plan. Pass the web app name and the resource group as inputs. Do not read them from Terraform output.
+## Deploy job split
+
+`spa-app-service-pr-preview.yml` uses two jobs:
+
+1. **provision-slot** — create the slot when missing, disable auto-swap, optional public network
+2. **deploy-to-slot** — checkout caller repo, optional caller prepare script, SCM wait (when the slot was new), build, zip-deploy with retries, HTTP verify, failure summary
+
+## Hardening
+
+| Step | Behavior |
+| --- | --- |
+| SCM wait | Polls the slot SCM site until HTTP is not 503 (new slots only by default) |
+| Zip deploy | Retries transient Kudu 503 errors with backoff |
+| Verify | Probes `health_path`; optional Easy Auth redirect acceptance |
+| Failure summary | Writes a step summary with category: `platform_transient`, `platform_config`, `build`, `app_runtime`, or `workflow` |
+
+Call the workflow with `@dev` until the commit is on `dev`. After merge, pin a commit SHA. Tag `v4` does not move with every pull request.
 
 ## Secrets
 
-Map the caller secret names at the call site:
+Map caller secret names at the call site:
 
 ```yaml
 secrets:
   AZURE_CLIENT_ID: ${{ secrets.CLIENT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}
   AZURE_TENANT_ID: ${{ secrets.TENANT_ID }}
+  PR_PREVIEW_AUTH_CLIENT_ID: ${{ secrets.PR_PREVIEW_AUTH_CLIENT_ID }}
 ```
 
-`secrets: inherit` does not rename those secrets.
+The preview jobs need `contents: read` and `id-token: write`.
 
-The preview job also needs `contents: read` and `id-token: write`. Cleanup and orphan cleanup also need `issues: write` and `pull-requests: read`.
+## Caller prepare script
 
-## Build variables
+Use `caller_prepare_script` for repository-specific slot hardening (IP rules, Easy Auth, private SCM). Pass public values through `caller_prepare_env_json`.
 
-`build_env_json` is a JSON object of public build-time variables. Do not put secrets in it. The caller can pass Entra values from GitHub environment variables.
-
-`slot_name` must not be `production` or `staging`. A caller passes `pr-<number>`.
-
-Empty `health_path` skips the HTTP probe. The default path is `/health`. The probe requires HTTP 200 from that path and it does not follow redirects.
-
-Set `disable_easy_auth: true` when the app signs in without Easy Auth.
-
-Set `entra_app_id` on cleanup only when redirect URIs for `pr-<number>` must be removed. Leave it empty to skip that step.
-
-## Caller sketch
+## Caller sketch (monorepo SPA matrix)
 
 ```yaml
-jobs:
-  preview:
-    permissions:
-      contents: read
-      id-token: write
-    uses: kgknutsson/github-workflows/.github/workflows/spa-app-service-pr-preview.yml@dev
-    with:
-      environment: dev
-      webapp_name: ${{ vars.WEBAPP_NAME }}
-      resource_group: ${{ vars.RESOURCE_GROUP }}
-      slot_name: pr-${{ github.event.pull_request.number }}
-      node_version: "24"
-      build_command: yarn build
-      health_path: /health
-      build_env_json: '{"VITE_AUTH_MODE":"webapp"}'
-    secrets:
-      AZURE_CLIENT_ID: ${{ secrets.CLIENT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}
-      AZURE_TENANT_ID: ${{ secrets.TENANT_ID }}
-
-  comment:
-    needs: preview
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Post the preview URL
-        env:
-          SLOT_URL: ${{ needs.preview.outputs.slot_url }}
-        run: echo "Post $SLOT_URL on the pull request."
+deploy-webapp-apps:
+  needs: affected
+  strategy:
+    fail-fast: false
+    matrix:
+      name: ${{ fromJSON(needs.affected.outputs.spa_apps) }}
+  permissions:
+    contents: read
+    id-token: write
+  uses: kgknutsson/github-workflows/.github/workflows/spa-app-service-pr-preview.yml@dev # internal v4 line; commit pin after merge
+  with:
+    environment: dev
+    webapp_name: app-kgk-${{ matrix.name }}frontend-dev-swce
+    resource_group: rg-kgk-frontend-dev-swce
+    slot_name: pr-${{ github.event.pull_request.number }}
+    node_version: "22"
+    install_command: yarn install --frozen-lockfile
+    build_command: yarn nx build ${{ matrix.name }} --mode=development
+    output_directory: dist/apps/${{ matrix.name }}
+    health_path: /health
+    accept_auth_redirect: true
+    caller_prepare_script: .github/scripts/pr-preview-monorepo-spa-slot-prepare.sh
+    caller_prepare_env_json: ${{ format('{{"APP_SLUG":"{0}","PR_NUMBER":"{1}"}}', matrix.name, github.event.pull_request.number) }}
+    runner: ubuntu-latest
+    scripts_ref: dev
+  secrets:
+    AZURE_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+    AZURE_SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}
+    AZURE_TENANT_ID: ${{ secrets.TENANT_ID }}
+    PR_PREVIEW_AUTH_CLIENT_ID: ${{ secrets.PR_PREVIEW_AUTH_CLIENT_ID }}
 ```
 
-Call the workflows with `@dev` until this commit is on `dev`. After that, pin the full commit SHA. Tag `v4` does not move with this pull request.
+The caller still owns the pull request comment job. Use `spa-app-service-pr-preview-cleanup.yml` and `spa-app-service-pr-preview-orphan-cleanup.yml` for slot teardown. Optional `caller_pre_delete_script` runs before slot delete (for example private SCM cleanup).

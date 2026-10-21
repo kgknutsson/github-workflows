@@ -38,6 +38,9 @@ on:
         required: true
       AZURE_TENANT_ID:
         required: true
+      ENTRA_APP_ID:
+        description: Optional Entra app id for redirect URI cleanup (prefer over entra_app_id input)
+        required: false
 
 jobs:
   orphan-cleanup:
@@ -165,7 +168,7 @@ jobs:
 
   entra-redirects:
     needs: orphan-cleanup
-    if: inputs.entra_app_id != '' && needs.orphan-cleanup.outputs.deleted_prs != ''
+    if: (inputs.entra_app_id != '' || secrets.ENTRA_APP_ID != '') && needs.orphan-cleanup.outputs.deleted_prs != ''
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
@@ -186,7 +189,7 @@ jobs:
       - name: Remove redirect URIs for deleted previews
         shell: bash
         env:
-          ENTRA_APP_ID: ${{ inputs.entra_app_id }}
+          ENTRA_APP_ID: ${{ inputs.entra_app_id != '' && inputs.entra_app_id || secrets.ENTRA_APP_ID }}
           DELETED_PRS: ${{ needs.orphan-cleanup.outputs.deleted_prs }}
         run: |
           set -euo pipefail

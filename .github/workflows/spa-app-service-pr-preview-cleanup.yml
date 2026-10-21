@@ -34,6 +34,16 @@ on:
         type: string
         required: false
         default: ubuntu-latest
+      caller_pre_delete_script:
+        description: Optional script in the caller repo before the slot is deleted (private SCM teardown, and similar)
+        type: string
+        required: false
+        default: ""
+      caller_pre_delete_env_json:
+        description: JSON object exported before caller_pre_delete_script runs
+        type: string
+        required: false
+        default: "{}"
     secrets:
       AZURE_CLIENT_ID:
         required: true
@@ -41,6 +51,9 @@ on:
         required: true
       AZURE_TENANT_ID:
         required: true
+      ENTRA_APP_ID:
+        description: Optional Entra app id for redirect URI cleanup (prefer over entra_app_id input)
+        required: false
 
 jobs:
   cleanup:
@@ -62,6 +75,50 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Checkout caller repository
+        if: inputs.caller_pre_delete_script != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+
+      - name: Export caller pre-delete environment
+        if: inputs.caller_pre_delete_script != ''
+        shell: bash
+        env:
+          CALLER_PRE_DELETE_ENV_JSON: ${{ inputs.caller_pre_delete_env_json }}
+        run: |
+          set -euo pipefail
+          python3 - "$CALLER_PRE_DELETE_ENV_JSON" "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+          raw, path = sys.argv[1], sys.argv[2]
+          data = json.loads(raw)
+          if not isinstance(data, dict):
+              raise SystemExit("caller_pre_delete_env_json must be a JSON object")
+          with open(path, "a", encoding="utf-8") as handle:
+              for key, value in data.items():
+                  if not isinstance(key, str) or not key.replace("_", "").isalnum():
+                      raise SystemExit(f"unsupported caller pre-delete env name: {key}")
+                  text = "" if value is None else str(value)
+                  if "\n" in text or "\r" in text:
+                      raise SystemExit(f"unsupported caller pre-delete env value: {key}")
+                  handle.write(f"{key}={text}\n")
+          PY
+
+      - name: Run caller pre-delete script
+        if: inputs.caller_pre_delete_script != ''
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SLOT_NAME: ${{ inputs.slot_name }}
+        run: |
+          set -euo pipefail
+          script="${{ inputs.caller_pre_delete_script }}"
+          if [ ! -f "$script" ]; then
+            echo "::error::caller_pre_delete_script not found: $script"
+            exit 1
+          fi
+          bash "$script"
 
       - name: Delete the preview slot
         shell: bash
@@ -143,7 +200,7 @@ jobs:
 
   entra-redirects:
     needs: cleanup
-    if: inputs.entra_app_id != ''
+    if: inputs.entra_app_id != '' || secrets.ENTRA_APP_ID != ''
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
@@ -164,7 +221,7 @@ jobs:
       - name: Remove preview redirect URIs
         shell: bash
         env:
-          ENTRA_APP_ID: ${{ inputs.entra_app_id }}
+          ENTRA_APP_ID: ${{ inputs.entra_app_id != '' && inputs.entra_app_id || secrets.ENTRA_APP_ID }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
@@ -172,13 +229,16 @@ jobs:
           if [ -z "$current" ] || [ "$current" = "null" ]; then
             current="[]"
           fi
-          filtered="$(printf '%s' "$current" | jq -c --arg token "pr-${PR_NUMBER}." '[.[] | select(contains($token) | not)]')"
+          filtered="$(printf '%s' "$current" | jq -c --arg num "$PR_NUMBER" '[.[] | select((contains("pr-" + $num + ".") or contains("pr-" + $num + "/")) | not)]')"
           if [ "$(printf '%s' "$current" | jq -c 'sort')" = "$(printf '%s' "$filtered" | jq -c 'sort')" ]; then
             echo "No matching redirect URIs."
             exit 0
           fi
           if [ "$filtered" = "[]" ]; then
-            az ad app update --id "$ENTRA_APP_ID" --set web.redirectUris=[]
+            app_object_id="$(az ad app show --id "$ENTRA_APP_ID" --query id -o tsv)"
+            az rest --method PATCH \
+              --uri "https://graph.microsoft.com/v1.0/applications/${app_object_id}" \
+              --body '{"web":{"redirectUris":[]}}'
           else
             mapfile -t uris < <(printf '%s' "$filtered" | jq -r '.[]')
             az ad app update --id "$ENTRA_APP_ID" --web-redirect-uris "${uris[@]}"

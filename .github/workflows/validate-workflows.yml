@@ -36,3 +36,7 @@ jobs:
         run: |
           bash -n .github/scripts/azure-app-service-slot-promotion.sh
           bash -n .github/scripts/azure-app-service-slot-swap-guards.sh
+          bash -n .github/scripts/spa-app-service-wait-for-scm.sh
+          bash -n .github/scripts/spa-app-service-zip-deploy-retry.sh
+          bash -n .github/scripts/spa-app-service-verify-slot-http.sh
+          bash -n .github/scripts/spa-app-service-write-failure-summary.sh
