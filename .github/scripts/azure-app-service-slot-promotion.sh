@@ -185,6 +185,119 @@ cmd_smoke_test() {
   wait_for_http "$SMOKE_TEST_URL" "$max_wait" "$poll" "Smoke test"
 }
 
+wait_for_slot_state() {
+  local desired_state="$1"
+  local label="$2"
+  local attempt slot_state error_file
+  error_file="$(mktemp)"
+  trap 'rm -f "$error_file"' RETURN
+
+  for attempt in $(seq 1 12); do
+    if ! slot_state="$(az webapp show \
+      --name "$WEBAPP_NAME" \
+      --resource-group "$RESOURCE_GROUP" \
+      --slot "$STAGING_SLOT" \
+      --query state \
+      --output tsv 2>"$error_file")"; then
+      echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}' (attempt ${attempt})"
+      cat "$error_file"
+      return 1
+    fi
+    if [[ "$slot_state" == "$desired_state" ]]; then
+      echo "${label}: slot '${STAGING_SLOT}' is ${desired_state}"
+      return 0
+    fi
+    sleep 10
+  done
+
+  echo "::error::Slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}' did not reach ${desired_state} state in time (last: ${slot_state})"
+  return 1
+}
+
+cmd_slot_start() {
+  require_var WEBAPP_NAME
+  require_var RESOURCE_GROUP
+  STAGING_SLOT="${STAGING_SLOT:-staging}"
+  local slot_state error_file
+  error_file="$(mktemp)"
+  trap 'rm -f "$error_file"' RETURN
+
+  if ! slot_state="$(az webapp show \
+    --name "$WEBAPP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --slot "$STAGING_SLOT" \
+    --query state \
+    --output tsv 2>"$error_file")"; then
+    echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}'"
+    cat "$error_file"
+    exit 1
+  fi
+  if [[ "$slot_state" == "Running" ]]; then
+    echo "Deploy slot '${STAGING_SLOT}' is already Running"
+    exit 0
+  fi
+
+  echo "Starting deploy slot '${STAGING_SLOT}' (zip deploy does not start a stopped slot on its own)"
+  if ! az webapp start \
+    --name "$WEBAPP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --slot "$STAGING_SLOT" 2>"$error_file"; then
+    echo "::error::Failed to start slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}'"
+    cat "$error_file"
+    exit 1
+  fi
+  wait_for_slot_state "Running" "Start deploy slot"
+}
+
+cmd_slot_stop() {
+  require_var WEBAPP_NAME
+  require_var RESOURCE_GROUP
+  STAGING_SLOT="${STAGING_SLOT:-staging}"
+  local slot_state error_file
+  error_file="$(mktemp)"
+  trap 'rm -f "$error_file"' RETURN
+
+  if ! slot_state="$(az webapp show \
+    --name "$WEBAPP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --slot "$STAGING_SLOT" \
+    --query state \
+    --output tsv 2>"$error_file")"; then
+    echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}'"
+    cat "$error_file"
+    exit 1
+  fi
+  if [[ "$slot_state" == "Stopped" ]]; then
+    echo "Deploy slot '${STAGING_SLOT}' is already Stopped"
+    exit 0
+  fi
+
+  echo "Stopping deploy slot '${STAGING_SLOT}' to free App Service plan memory until the next release"
+  if ! az webapp stop \
+    --name "$WEBAPP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --slot "$STAGING_SLOT" 2>"$error_file"; then
+    echo "::error::Failed to stop slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}'"
+    cat "$error_file"
+    exit 1
+  fi
+  wait_for_slot_state "Stopped" "Stop deploy slot"
+}
+
+cmd_rollback_swap() {
+  require_var WEBAPP_NAME
+  require_var RESOURCE_GROUP
+  local staging_slot="${STAGING_SLOT:-staging}"
+  local target_slot="${TARGET_SLOT:-production}"
+  echo "Rolling back — swapping ${staging_slot} (previous production) back to ${target_slot}..."
+  az webapp deployment slot swap \
+    --name "$WEBAPP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --slot "$staging_slot" \
+    --target-slot "$target_slot"
+  echo "Rollback swap submitted for ${WEBAPP_NAME}."
+}
+
 cmd_promote() {
   require_var WEBAPP_NAME
   require_var RESOURCE_GROUP
@@ -487,7 +600,7 @@ PY
 }
 
 usage() {
-  echo "Usage: $0 {autoswap-check|staging-health|promote|production-health|smoke-test}" >&2
+  echo "Usage: $0 {autoswap-check|slot-start|slot-stop|staging-health|promote|production-health|smoke-test|rollback-swap}" >&2
   exit 1
 }
 
@@ -495,10 +608,13 @@ main() {
   [[ $# -eq 1 ]] || usage
   case "$1" in
     autoswap-check) cmd_autoswap_check ;;
+    slot-start) cmd_slot_start ;;
+    slot-stop) cmd_slot_stop ;;
     staging-health) cmd_staging_health ;;
     promote) cmd_promote ;;
     production-health) cmd_production_health ;;
     smoke-test) cmd_smoke_test ;;
+    rollback-swap) cmd_rollback_swap ;;
     *) usage ;;
   esac
 }

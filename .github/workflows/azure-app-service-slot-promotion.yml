@@ -118,6 +118,13 @@ on:
         type: string
         required: false
         default: azure-linux-runner
+      manage_deploy_slot_lifecycle:
+        description: >-
+          When true, start the staging slot before deploy or health checks and stop it
+          after production health passes (same contract as terraform-java-app-service).
+        type: boolean
+        required: false
+        default: false
     secrets:
       CLIENT_ID:
         required: true
@@ -227,6 +234,15 @@ jobs:
           STAGING_SLOT: ${{ inputs.staging-slot }}
         run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh autoswap-check
 
+      - name: Start staging slot before deploy
+        if: inputs.manage_deploy_slot_lifecycle
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-start
+
       - name: Download deployment package artifact
         if: inputs.package-artifact-name != ''
         uses: actions/download-artifact@v4
@@ -243,7 +259,17 @@ jobs:
           package: ${{ inputs.package-path != '' && inputs.package-path || format('.promotion-package/{0}', inputs.package-artifact-filename) }}
           target-path: ${{ inputs.package-target-path }}
 
+      - name: Start staging slot before health check
+        if: inputs.manage_deploy_slot_lifecycle && inputs.package-path == '' && inputs.package-artifact-name == ''
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-start
+
       - name: Verify staging slot health
+        id: staging_health
         shell: bash
         env:
           WEBAPP_NAME: ${{ inputs.webapp-name }}
@@ -270,6 +296,7 @@ jobs:
         run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh promote
 
       - name: Verify production health
+        id: production_health
         shell: bash
         env:
           WEBAPP_NAME: ${{ inputs.webapp-name }}
@@ -281,6 +308,25 @@ jobs:
           PRODUCTION_HEALTH_MAX_WAIT_SECONDS: ${{ inputs.production-health-max-wait-seconds }}
           POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
         run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh production-health
+
+      - name: Roll back slot swap after failed production verification
+        if: failure() && steps.arm_promote.outcome == 'success' && steps.production_health.outcome == 'failure'
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+          TARGET_SLOT: ${{ inputs.target-slot }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh rollback-swap
+
+      - name: Stop staging slot when lifecycle management is enabled
+        if: always() && inputs.manage_deploy_slot_lifecycle
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-stop
 
       - name: Optional smoke test
         if: inputs.smoke-test-url != ''
