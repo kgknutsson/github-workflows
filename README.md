@@ -7,6 +7,12 @@ Safe staging → production promotion with AutoSwap preflight, bounded health ga
 
 Pin `@dev` or `@v4` and set matching `scripts-ref`.
 
+Optional input `manage_deploy_slot_lifecycle` (default `false`): when `true`, starts the staging slot before deploy or health checks and stops it after production health passes.
+
+## azure-webapp-zip-deploy.yml
+
+Direct zip deploy to a Web App slot with a post-deploy health gate. Use for dev (production slot) while prod uses `azure-app-service-slot-promotion.yml`. See [docs/azure-webapp-zip-deploy.md](docs/azure-webapp-zip-deploy.md).
+
 ## azure-app-service-slot-swap-recovery-preflight.yml
 
 Callable preflight for slot-swap recovery metadata (and optional production health URL). Cron and full reconciliation stay in the consumer repo. See [docs/slot-swap-guards-and-recovery.md](docs/slot-swap-guards-and-recovery.md) and [docs/examples/recover-slot-swap-cron-wrapper.yml](docs/examples/recover-slot-swap-cron-wrapper.yml).
