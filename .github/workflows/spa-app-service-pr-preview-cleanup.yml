@@ -44,6 +44,16 @@ on:
         type: string
         required: false
         default: "{}"
+      delete_pr_comment:
+        description: When true, delete the pull request comment that contains comment_marker
+        type: boolean
+        required: false
+        default: true
+      scripts_ref:
+        description: git ref in kgknutsson/github-workflows for helper scripts
+        type: string
+        required: false
+        default: dev
     secrets:
       AZURE_CLIENT_ID:
         required: true
@@ -61,7 +71,7 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
     concurrency:
-      group: spa-preview-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      group: spa-preview-slot-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -104,49 +114,28 @@ jobs:
                   handle.write(f"{key}={text}\n")
           PY
 
+      - name: Checkout workflow helper scripts
+        if: inputs.caller_pre_delete_script != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          repository: kgknutsson/github-workflows
+          ref: ${{ inputs.scripts_ref }}
+          path: kgk-github-workflows
+          sparse-checkout: |
+            .github/scripts/spa-app-service-run-caller-script.sh
+          sparse-checkout-cone-mode: false
+
       - name: Run caller pre-delete script
         if: inputs.caller_pre_delete_script != ''
-        shell: bash
         env:
+          CALLER_SCRIPT_PATH: ${{ inputs.caller_pre_delete_script }}
           WEBAPP_NAME: ${{ inputs.webapp_name }}
           RESOURCE_GROUP: ${{ inputs.resource_group }}
           SLOT_NAME: ${{ inputs.slot_name }}
-        run: |
-          set -euo pipefail
-          script="${{ inputs.caller_pre_delete_script }}"
-          if [ ! -f "$script" ]; then
-            echo "::error::caller_pre_delete_script not found: $script"
-            exit 1
-          fi
-          bash "$script"
-
-      - name: Delete the preview slot
-        shell: bash
-        env:
-          WEBAPP_NAME: ${{ inputs.webapp_name }}
-          RESOURCE_GROUP: ${{ inputs.resource_group }}
-          SLOT_NAME: ${{ inputs.slot_name }}
-        run: |
-          set -euo pipefail
-          if [ "$SLOT_NAME" = "production" ] || [ "$SLOT_NAME" = "staging" ]; then
-            echo "::error::slot_name must name a preview slot."
-            exit 1
-          fi
-          if ! az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query name -o tsv >/dev/null; then
-            echo "Web app was not found. Nothing to delete."
-          else
-            existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
-            if [ "$existing" = "$SLOT_NAME" ]; then
-              az webapp deployment slot delete \
-                --name "$WEBAPP_NAME" \
-                --resource-group "$RESOURCE_GROUP" \
-                --slot "$SLOT_NAME"
-            else
-              echo "Slot $SLOT_NAME was not found."
-            fi
-          fi
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
 
       - name: Delete the preview comment
+        if: inputs.delete_pr_comment == true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -194,13 +183,45 @@ jobs:
                       "Accept": "application/vnd.github+json",
                   },
               )
-              with urllib.request.urlopen(delete):
-                  print(f"Deleted comment {comment['id']}")
+              try:
+                  with urllib.request.urlopen(delete):
+                      print(f"Deleted comment {comment['id']}")
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      print(f"Comment {comment['id']} was already deleted.")
+                  else:
+                      raise
           PY
+
+      - name: Delete the preview slot
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SLOT_NAME: ${{ inputs.slot_name }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$SLOT_NAME" | grep -Eq '^pr-[0-9]+$'; then
+            echo "::error::slot_name must match pr-<number>."
+            exit 1
+          fi
+          if ! az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query name -o tsv >/dev/null; then
+            echo "Web app was not found. Nothing to delete."
+          else
+            existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
+            if [ "$existing" = "$SLOT_NAME" ]; then
+              az webapp deployment slot delete \
+                --name "$WEBAPP_NAME" \
+                --resource-group "$RESOURCE_GROUP" \
+                --slot "$SLOT_NAME"
+            else
+              echo "Slot $SLOT_NAME was not found."
+            fi
+          fi
 
   entra-redirects:
     needs: cleanup
-    if: inputs.entra_app_id != '' || secrets.ENTRA_APP_ID != ''
+    if: always() && needs.cleanup.result != 'cancelled'
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
@@ -221,10 +242,14 @@ jobs:
       - name: Remove preview redirect URIs
         shell: bash
         env:
-          ENTRA_APP_ID: ${{ inputs.entra_app_id != '' && inputs.entra_app_id || secrets.ENTRA_APP_ID }}
+          ENTRA_APP_ID: ${{ secrets.ENTRA_APP_ID != '' && secrets.ENTRA_APP_ID || inputs.entra_app_id }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
+          if [ -z "$ENTRA_APP_ID" ]; then
+            echo "No Entra app id configured. Skip redirect URI cleanup."
+            exit 0
+          fi
           current="$(az ad app show --id "$ENTRA_APP_ID" --query "web.redirectUris" -o json)"
           if [ -z "$current" ] || [ "$current" = "null" ]; then
             current="[]"

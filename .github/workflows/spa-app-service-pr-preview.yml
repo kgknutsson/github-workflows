@@ -134,7 +134,7 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 15
     concurrency:
-      group: spa-preview-provision-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      group: spa-preview-slot-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -166,8 +166,8 @@ jobs:
             echo "::error::slot_name must name a preview slot."
             exit 1
           fi
-          if ! printf '%s' "$SLOT_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{0,58}$'; then
-            echo "::error::slot_name may contain only lowercase letters, numbers, and hyphens."
+          if ! printf '%s' "$SLOT_NAME" | grep -Eq '^pr-[0-9]+$'; then
+            echo "::error::slot_name must match pr-<number> (for example pr-123)."
             exit 1
           fi
 
@@ -198,7 +198,7 @@ jobs:
             --name "$WEBAPP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
             --slot "$SLOT_NAME" \
-            --disable
+            --action disable
 
           if [ "$ENABLE_PUBLIC_NETWORK" = "true" ]; then
             slot_id="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query id -o tsv)"
@@ -232,8 +232,8 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 30
     concurrency:
-      group: spa-preview-deploy-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
-      cancel-in-progress: true
+      group: spa-preview-slot-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -253,6 +253,16 @@ jobs:
       VERIFY_LOG: ${{ runner.temp }}/spa-app-service-verify.log
       BUILD_LOG: ${{ runner.temp }}/spa-app-service-build.log
     steps:
+      - name: Reject fork pull request previews
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "::error::Fork pull request previews are not supported on this workflow."
+            exit 1
+          fi
+
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
 
@@ -267,9 +277,64 @@ jobs:
             .github/scripts/spa-app-service-zip-deploy-retry.sh
             .github/scripts/spa-app-service-verify-slot-http.sh
             .github/scripts/spa-app-service-write-failure-summary.sh
+            .github/scripts/spa-app-service-run-caller-script.sh
           sparse-checkout-cone-mode: false
 
-      - name: Login to Azure
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # tag: v6
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+
+      - name: Export build environment
+        shell: bash
+        env:
+          BUILD_ENV_JSON: ${{ inputs.build_env_json }}
+        run: |
+          set -euo pipefail
+          python3 - "$BUILD_ENV_JSON" "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+          raw, path = sys.argv[1], sys.argv[2]
+          data = json.loads(raw)
+          if not isinstance(data, dict):
+              raise SystemExit("build_env_json must be a JSON object")
+          with open(path, "a", encoding="utf-8") as handle:
+              for key, value in data.items():
+                  if not isinstance(key, str) or not key.replace("_", "").isalnum():
+                      raise SystemExit(f"unsupported build env name: {key}")
+                  text = "" if value is None else str(value)
+                  if "\n" in text or "\r" in text:
+                      raise SystemExit(f"unsupported build env value: {key}")
+                  handle.write(f"{key}={text}\n")
+          PY
+
+      - name: Login to Azure (pre-build secrets)
+        if: inputs.caller_pre_build_script != ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run caller pre-build script
+        if: inputs.caller_pre_build_script != ''
+        env:
+          CALLER_SCRIPT_PATH: ${{ inputs.caller_pre_build_script }}
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
+
+      - name: Install and build
+        shell: bash
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
+          BUILD_COMMAND: ${{ inputs.build_command }}
+        run: |
+          set -euo pipefail
+          bash -c "$INSTALL_COMMAND" 2>&1 | tee "$BUILD_LOG"
+          bash -c "$BUILD_COMMAND" 2>&1 | tee -a "$BUILD_LOG"
+
+      - name: Login to Azure (deploy)
+        if: inputs.caller_pre_build_script == ''
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -302,74 +367,16 @@ jobs:
 
       - name: Run caller prepare script
         if: inputs.caller_prepare_script != ''
-        shell: bash
         env:
+          CALLER_SCRIPT_PATH: ${{ inputs.caller_prepare_script }}
           PR_PREVIEW_AUTH_CLIENT_ID: ${{ secrets.PR_PREVIEW_AUTH_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        run: |
-          set -euo pipefail
-          script="${{ inputs.caller_prepare_script }}"
-          if [ ! -f "$script" ]; then
-            echo "::error::caller_prepare_script not found: $script"
-            exit 1
-          fi
-          bash "$script"
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
 
       - name: Wait for SCM when the slot is new
         if: needs.provision-slot.outputs.slot_created == 'true' || inputs.wait_for_scm_on_reused_slot == true
         shell: bash
         run: bash kgk-github-workflows/.github/scripts/spa-app-service-wait-for-scm.sh
-
-      - name: Setup Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # tag: v6
-        with:
-          node-version: ${{ inputs.node_version }}
-          cache: ${{ inputs.package_manager }}
-
-      - name: Export build environment
-        shell: bash
-        env:
-          BUILD_ENV_JSON: ${{ inputs.build_env_json }}
-        run: |
-          set -euo pipefail
-          python3 - "$BUILD_ENV_JSON" "$GITHUB_ENV" <<'PY'
-          import json
-          import sys
-          raw, path = sys.argv[1], sys.argv[2]
-          data = json.loads(raw)
-          if not isinstance(data, dict):
-              raise SystemExit("build_env_json must be a JSON object")
-          with open(path, "a", encoding="utf-8") as handle:
-              for key, value in data.items():
-                  if not isinstance(key, str) or not key.replace("_", "").isalnum():
-                      raise SystemExit(f"unsupported build env name: {key}")
-                  text = "" if value is None else str(value)
-                  if "\n" in text or "\r" in text:
-                      raise SystemExit(f"unsupported build env value: {key}")
-                  handle.write(f"{key}={text}\n")
-          PY
-
-      - name: Run caller pre-build script
-        if: inputs.caller_pre_build_script != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          script="${{ inputs.caller_pre_build_script }}"
-          if [ ! -f "$script" ]; then
-            echo "::error::caller_pre_build_script not found: $script"
-            exit 1
-          fi
-          bash "$script"
-
-      - name: Install and build
-        shell: bash
-        env:
-          INSTALL_COMMAND: ${{ inputs.install_command }}
-          BUILD_COMMAND: ${{ inputs.build_command }}
-        run: |
-          set -euo pipefail
-          bash -c "$INSTALL_COMMAND"
-          bash -c "$BUILD_COMMAND" 2>&1 | tee "$BUILD_LOG"
 
       - name: Zip-deploy with retries
         shell: bash

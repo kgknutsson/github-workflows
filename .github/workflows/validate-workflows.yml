@@ -40,3 +40,4 @@ jobs:
           bash -n .github/scripts/spa-app-service-zip-deploy-retry.sh
           bash -n .github/scripts/spa-app-service-verify-slot-http.sh
           bash -n .github/scripts/spa-app-service-write-failure-summary.sh
+          bash -n .github/scripts/spa-app-service-run-caller-script.sh

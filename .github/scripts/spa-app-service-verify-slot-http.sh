@@ -39,12 +39,8 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   elif [ "$status" = "200" ]; then
     echo "Verification passed (HTTP 200) on attempt ${attempt}/${MAX_ATTEMPTS}."
     exit 0
-  elif [ "$ACCEPT_AUTH_REDIRECT" = "true" ] && { [ "$status" = "302" ] || [ "$status" = "401" ] || [ "$status" = "403" ]; }; then
-    if [ -n "$location" ] && echo "$location" | grep -qi 'login.microsoftonline.com'; then
-      echo "Verification passed (HTTP ${status} to Entra login) on attempt ${attempt}/${MAX_ATTEMPTS}."
-      exit 0
-    fi
-    echo "Verification passed (HTTP ${status}; auth gate) on attempt ${attempt}/${MAX_ATTEMPTS}."
+  elif [ "$ACCEPT_AUTH_REDIRECT" = "true" ] && [ "$status" = "302" ] && [ -n "$location" ] && echo "$location" | grep -qi 'login.microsoftonline.com'; then
+    echo "Verification passed (HTTP 302 to Entra login) on attempt ${attempt}/${MAX_ATTEMPTS}."
     exit 0
   elif [ "$status" = "502" ] || [ "$status" = "503" ]; then
     echo "Attempt ${attempt}/${MAX_ATTEMPTS}: HTTP ${status} (platform warming)."

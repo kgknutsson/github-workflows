@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: 30
     concurrency:
       group: spa-preview-orphan-${{ inputs.webapp_name }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -111,16 +111,8 @@ jobs:
               echo "Pull request ${pr_number} is open. Slot ${slot} stays."
               continue
             fi
-            echo "Deleting slot ${slot}. Pull request state: ${state}."
-            az webapp deployment slot delete \
-              --name "$WEBAPP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --slot "$slot"
             deleted="${deleted} ${pr_number}"
-            if [ "$state" = "MISSING" ]; then
-              echo "Pull request ${pr_number} does not exist. Skip comment cleanup."
-              continue
-            fi
+            if [ "$state" != "MISSING" ]; then
             PR_NUMBER="$pr_number" python3 - <<'PY'
           import json
           import os
@@ -160,15 +152,27 @@ jobs:
                       "Accept": "application/vnd.github+json",
                   },
               )
-              with urllib.request.urlopen(delete):
-                  print(f"Deleted comment {comment['id']} on pull request {number}")
+              try:
+                  with urllib.request.urlopen(delete):
+                      print(f"Deleted comment {comment['id']} on pull request {number}")
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      print(f"Comment {comment['id']} was already deleted.")
+                  else:
+                      raise
           PY
+            fi
+            echo "Deleting slot ${slot}. Pull request state: ${state}."
+            az webapp deployment slot delete \
+              --name "$WEBAPP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --slot "$slot"
           done
           echo "deleted_prs=${deleted# }" >> "$GITHUB_OUTPUT"
 
   entra-redirects:
     needs: orphan-cleanup
-    if: (inputs.entra_app_id != '' || secrets.ENTRA_APP_ID != '') && needs.orphan-cleanup.outputs.deleted_prs != ''
+    if: always() && needs.orphan-cleanup.result == 'success' && needs.orphan-cleanup.outputs.deleted_prs != ''
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
@@ -189,24 +193,31 @@ jobs:
       - name: Remove redirect URIs for deleted previews
         shell: bash
         env:
-          ENTRA_APP_ID: ${{ inputs.entra_app_id != '' && inputs.entra_app_id || secrets.ENTRA_APP_ID }}
+          ENTRA_APP_ID: ${{ secrets.ENTRA_APP_ID != '' && secrets.ENTRA_APP_ID || inputs.entra_app_id }}
           DELETED_PRS: ${{ needs.orphan-cleanup.outputs.deleted_prs }}
         run: |
           set -euo pipefail
+          if [ -z "$ENTRA_APP_ID" ]; then
+            echo "No Entra app id configured. Skip redirect URI cleanup."
+            exit 0
+          fi
           current="$(az ad app show --id "$ENTRA_APP_ID" --query "web.redirectUris" -o json)"
           if [ -z "$current" ] || [ "$current" = "null" ]; then
             current="[]"
           fi
           filtered="$current"
           for pr_number in $DELETED_PRS; do
-            filtered="$(printf '%s' "$filtered" | jq -c --arg token "pr-${pr_number}." '[.[] | select(contains($token) | not)]')"
+            filtered="$(printf '%s' "$filtered" | jq -c --arg num "$pr_number" '[.[] | select((contains("pr-" + $num + ".") or contains("pr-" + $num + "/")) | not)]')"
           done
           if [ "$(printf '%s' "$current" | jq -c 'sort')" = "$(printf '%s' "$filtered" | jq -c 'sort')" ]; then
             echo "No matching redirect URIs."
             exit 0
           fi
           if [ "$filtered" = "[]" ]; then
-            az ad app update --id "$ENTRA_APP_ID" --set web.redirectUris=[]
+            app_object_id="$(az ad app show --id "$ENTRA_APP_ID" --query id -o tsv)"
+            az rest --method PATCH \
+              --uri "https://graph.microsoft.com/v1.0/applications/${app_object_id}" \
+              --body '{"web":{"redirectUris":[]}}'
           else
             mapfile -t uris < <(printf '%s' "$filtered" | jq -r '.[]')
             az ad app update --id "$ENTRA_APP_ID" --web-redirect-uris "${uris[@]}"
