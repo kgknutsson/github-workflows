@@ -12,14 +12,20 @@ Pin the caller and `scripts-ref` on promotion to the same ref (`@v4` or `@dev`).
 ## Example (monorepo SPA prod)
 
 ```yaml
-uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-promotion.yml@v4
-with:
-  environment: webapp-prod
-  webapp-name: app-kgk-fleetfrontend-prd-swce
-  resource-group: rg-kgk-frontend-prd-swce
-  package-artifact-name: webapp-fleet
-  health-check-path: /health
-  manage_deploy_slot_lifecycle: true
-  scripts-ref: v4
-secrets: inherit
+jobs:
+  promote-fleet:
+    needs: build
+    permissions:
+      id-token: write
+      contents: read
+    uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-promotion.yml@v4
+    with:
+      environment: webapp-prod
+      webapp-name: app-kgk-fleetfrontend-prd-swce
+      resource-group: rg-kgk-frontend-prd-swce
+      package-artifact-name: webapp-fleet
+      health-check-path: /health
+      manage_deploy_slot_lifecycle: true
+      scripts-ref: v4
+    secrets: inherit
 ```

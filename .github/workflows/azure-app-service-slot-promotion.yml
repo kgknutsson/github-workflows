@@ -309,15 +309,6 @@ jobs:
           POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
         run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh production-health
 
-      - name: Stop staging slot after successful promotion
-        if: inputs.manage_deploy_slot_lifecycle && steps.production_health.outcome == 'success'
-        shell: bash
-        env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
-          RESOURCE_GROUP: ${{ inputs.resource-group }}
-          STAGING_SLOT: ${{ inputs.staging-slot }}
-        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-stop
-
       - name: Roll back slot swap after failed production verification
         if: failure() && steps.arm_promote.outcome == 'success' && steps.production_health.outcome == 'failure'
         shell: bash
@@ -327,6 +318,15 @@ jobs:
           STAGING_SLOT: ${{ inputs.staging-slot }}
           TARGET_SLOT: ${{ inputs.target-slot }}
         run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh rollback-swap
+
+      - name: Stop staging slot when lifecycle management is enabled
+        if: always() && inputs.manage_deploy_slot_lifecycle
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-stop
 
       - name: Optional smoke test
         if: inputs.smoke-test-url != ''

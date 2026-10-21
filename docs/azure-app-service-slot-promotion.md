@@ -79,9 +79,11 @@ jobs:
 
 ## Failure behavior
 
-- **409 / 04026**: Fail closed. No retry swap and no rollback swap from this workflow.
+- **409 / 04026**: Fail closed. No retry swap. Do not infer success from a second swap attempt.
+- **Production health failure after swap**: Runs `rollback-swap` (CLI swap staging back to production) when ARM promote succeeded but production health failed.
 - **Client timeout on ARM POST**: Reconcile via async polling and activity-log correlation only. No blind second swap.
 - **Deadline**: `promotion-max-wait-seconds` caps the whole promotion window. Each HTTP call uses the remaining time.
+- **`manage_deploy_slot_lifecycle`**: Stops the staging slot when the job finishes (`always()`), including failed deploy or health checks.
 
 ## Migration note
 

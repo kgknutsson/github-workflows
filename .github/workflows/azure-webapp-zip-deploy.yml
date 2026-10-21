@@ -87,7 +87,15 @@ jobs:
           name: ${{ inputs.package-artifact-name }}
           path: .webapp-package
 
-      - name: Deploy package
+      - name: Deploy package to production slot
+        if: inputs.deployment-slot == 'production'
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ inputs.webapp-name }}
+          package: .webapp-package/${{ inputs.package-artifact-filename }}
+
+      - name: Deploy package to named deployment slot
+        if: inputs.deployment-slot != 'production'
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ inputs.webapp-name }}
