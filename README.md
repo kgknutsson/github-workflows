@@ -11,6 +11,16 @@ Pin `@dev` or `@v4` and set matching `scripts-ref`.
 
 Callable preflight for slot-swap recovery metadata (and optional production health URL). Cron and full reconciliation stay in the consumer repo. See [docs/slot-swap-guards-and-recovery.md](docs/slot-swap-guards-and-recovery.md) and [docs/examples/recover-slot-swap-cron-wrapper.yml](docs/examples/recover-slot-swap-cron-wrapper.yml).
 
+## SPA App Service pull request preview
+
+`spa-app-service-pr-preview.yml` builds a Node app and zip-deploys it to one preview slot. It creates the slot when the slot is missing. It does not apply Terraform and it does not swap the slot to production.
+
+`spa-app-service-pr-preview-cleanup.yml` deletes that slot and the preview comment.
+
+`spa-app-service-pr-preview-orphan-cleanup.yml` deletes `pr-*` slots whose pull request is not open.
+
+The caller owns `pull_request`, path filters, the schedule, and the preview comment. See `docs/spa-app-service-pr-preview.md`.
+
 ## Terraform CI, plan, and apply
 
 `terraform-ci.yml`, `terraform-plan.yml`, and `terraform-apply.yml` are callable workflows. The caller owns triggers. See `docs/terraform-ci-plan-apply.md`.
