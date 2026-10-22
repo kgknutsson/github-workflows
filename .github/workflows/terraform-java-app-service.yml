@@ -69,7 +69,7 @@ jobs:
       contents: read
     steps:
       - name: Apply Terraform configuration
-        uses: kgknutsson/github-actions/gitops-apply-terraform@v3
+        uses: kgknutsson/github-actions/gitops-apply-terraform@v4
         with:
           client_id: ${{ secrets.CLIENT_ID }}
           subscription_id: ${{ secrets.SUBSCRIPTION_ID }}
