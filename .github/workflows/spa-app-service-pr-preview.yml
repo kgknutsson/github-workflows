@@ -198,7 +198,7 @@ jobs:
             --name "$WEBAPP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
             --slot "$SLOT_NAME" \
-            --action disable
+            --disable
 
           if [ "$ENABLE_PUBLIC_NETWORK" = "true" ]; then
             slot_id="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query id -o tsv)"
