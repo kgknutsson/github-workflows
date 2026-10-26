@@ -1,5 +1,5 @@
-# Build a SPA and zip-deploy it to one non-production slot.
-# The caller owns pull_request, path filters, and the pull request comment.
+# Callable: provision a preview slot, build the caller repo, zip-deploy with SCM wait + retries, verify.
+# The caller owns pull_request triggers, path filters, matrix, and PR comments.
 name: SPA App Service pull request preview
 
 on:
@@ -10,7 +10,7 @@ on:
         type: string
         required: true
       webapp_name:
-        description: Existing App Service name. This workflow does not read Terraform output
+        description: Existing App Service name
         type: string
         required: true
       resource_group:
@@ -20,10 +20,17 @@ on:
         description: Preview slot name, for example pr-123. Must not be production or staging
         type: string
         required: true
+      configuration_source:
+        description: >-
+          Slot configuration source passed to az webapp deployment slot create.
+          Use the web app name for SPA previews or webapp/staging for staged apps.
+        type: string
+        required: false
+        default: ""
       node_version:
         type: string
         required: false
-        default: "24"
+        default: "22"
       package_manager:
         description: Cache key for setup-node. Use npm, yarn, or pnpm
         type: string
@@ -51,6 +58,11 @@ on:
         type: string
         required: false
         default: /health
+      accept_auth_redirect:
+        description: When true, treat Entra login redirects as a healthy slot for Easy Auth apps
+        type: boolean
+        required: false
+        default: false
       enable_public_network:
         type: boolean
         required: false
@@ -60,10 +72,37 @@ on:
         type: boolean
         required: false
         default: false
+      caller_prepare_script:
+        description: >-
+          Optional script path relative to the caller repository root.
+          Runs after Azure login in the deploy job (IP rules, Easy Auth, private SCM, and similar).
+        type: string
+        required: false
+        default: ""
+      caller_prepare_env_json:
+        description: JSON object exported to the environment before caller_prepare_script runs
+        type: string
+        required: false
+        default: "{}"
+      caller_pre_build_script:
+        description: Optional script path that runs after caller prepare and before install/build (Key Vault env, cache, and similar)
+        type: string
+        required: false
+        default: ""
+      scripts_ref:
+        description: git ref in kgknutsson/github-workflows used to fetch helper scripts
+        type: string
+        required: false
+        default: dev
       runner:
         type: string
         required: false
         default: ubuntu-latest
+      wait_for_scm_on_reused_slot:
+        description: When false, SCM wait runs only if the slot was created in the provision job
+        type: boolean
+        required: false
+        default: false
     secrets:
       AZURE_CLIENT_ID:
         required: true
@@ -71,38 +110,39 @@ on:
         required: true
       AZURE_TENANT_ID:
         required: true
+      PR_PREVIEW_AUTH_CLIENT_ID:
+        description: Optional Entra app id for caller prepare scripts that configure Easy Auth
+        required: false
     outputs:
       slot_hostname:
         description: Slot hostname without a scheme
-        value: ${{ jobs.preview.outputs.slot_hostname }}
+        value: ${{ jobs.deploy-to-slot.outputs.slot_hostname }}
       slot_url:
         description: https URL of the slot
-        value: ${{ jobs.preview.outputs.slot_url }}
+        value: ${{ jobs.deploy-to-slot.outputs.slot_url }}
+      slot_created:
+        description: true when the provision job created the slot in this run
+        value: ${{ jobs.provision-slot.outputs.slot_created }}
+      failure_category:
+        description: Coarse failure category when deploy-to-slot fails
+        value: ${{ jobs.deploy-to-slot.outputs.failure_category }}
 
 jobs:
-  preview:
-    runs-on: ${{ inputs.runner }}
+  provision-slot:
+    name: Provision preview slot
+    runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     concurrency:
-      group: spa-preview-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
-      cancel-in-progress: true
+      group: spa-preview-slot-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
     outputs:
-      slot_hostname: ${{ steps.publish.outputs.slot_hostname }}
-      slot_url: ${{ steps.publish.outputs.slot_url }}
+      slot_created: ${{ steps.provision.outputs.slot_created }}
+      slot_hostname: ${{ steps.provision.outputs.slot_hostname }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
-
-      - name: Setup Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # tag: v6
-        with:
-          node-version: ${{ inputs.node_version }}
-          cache: ${{ inputs.package_manager }}
-
       - name: Login to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
         with:
@@ -110,12 +150,14 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Create the preview slot when it is missing
+      - name: Create or reuse the preview slot
+        id: provision
         shell: bash
         env:
           WEBAPP_NAME: ${{ inputs.webapp_name }}
           RESOURCE_GROUP: ${{ inputs.resource_group }}
           SLOT_NAME: ${{ inputs.slot_name }}
+          CONFIGURATION_SOURCE: ${{ inputs.configuration_source }}
           ENABLE_PUBLIC_NETWORK: ${{ inputs.enable_public_network }}
           DISABLE_EASY_AUTH: ${{ inputs.disable_easy_auth }}
         run: |
@@ -124,10 +166,12 @@ jobs:
             echo "::error::slot_name must name a preview slot."
             exit 1
           fi
-          if ! printf '%s' "$SLOT_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{0,58}$'; then
-            echo "::error::slot_name may contain only lowercase letters, numbers, and hyphens."
+          if ! printf '%s' "$SLOT_NAME" | grep -Eq '^pr-[0-9]+$'; then
+            echo "::error::slot_name must match pr-<number> (for example pr-123)."
             exit 1
           fi
+
+          slot_created=false
           existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
           if [ "$existing" != "$SLOT_NAME" ]; then
             slot_count="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "length(@)" -o tsv)"
@@ -138,21 +182,29 @@ jobs:
             if [ "$slot_count" -ge 15 ]; then
               echo "::warning::This web app has ${slot_count} deployment slots."
             fi
+            source="${CONFIGURATION_SOURCE:-$WEBAPP_NAME}"
+            echo "Creating deployment slot ${SLOT_NAME} from ${source}"
             az webapp deployment slot create \
               --name "$WEBAPP_NAME" \
               --resource-group "$RESOURCE_GROUP" \
               --slot "$SLOT_NAME" \
-              --configuration-source "$WEBAPP_NAME"
+              --configuration-source "$source"
+            slot_created=true
+          else
+            echo "Slot ${SLOT_NAME} already exists; reusing."
           fi
+
           az webapp deployment slot auto-swap \
             --name "$WEBAPP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
             --slot "$SLOT_NAME" \
-            --disable
+            --action disable
+
           if [ "$ENABLE_PUBLIC_NETWORK" = "true" ]; then
             slot_id="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query id -o tsv)"
             az resource update --ids "$slot_id" --set properties.publicNetworkAccess=Enabled >/dev/null
           fi
+
           if [ "$DISABLE_EASY_AUTH" = "true" ]; then
             if ! az webapp auth update \
               --name "$WEBAPP_NAME" \
@@ -163,6 +215,73 @@ jobs:
               echo "::warning::Easy Auth was not updated on ${SLOT_NAME}."
             fi
           fi
+
+          host="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query defaultHostName -o tsv)"
+          if [ -z "$host" ]; then
+            echo "::error::Azure did not return a slot hostname."
+            exit 1
+          fi
+
+          echo "slot_created=${slot_created}" >> "$GITHUB_OUTPUT"
+          echo "slot_hostname=${host}" >> "$GITHUB_OUTPUT"
+
+  deploy-to-slot:
+    name: Build and deploy preview
+    needs: provision-slot
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
+    concurrency:
+      group: spa-preview-slot-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      slot_hostname: ${{ steps.publish.outputs.slot_hostname }}
+      slot_url: ${{ steps.publish.outputs.slot_url }}
+      failure_category: ${{ steps.failure_summary.outputs.failure_category }}
+    env:
+      WEBAPP_NAME: ${{ inputs.webapp_name }}
+      RESOURCE_GROUP: ${{ inputs.resource_group }}
+      SLOT_NAME: ${{ inputs.slot_name }}
+      SLOT_CREATED: ${{ needs.provision-slot.outputs.slot_created }}
+      OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
+      HEALTH_PATH: ${{ inputs.health_path }}
+      ACCEPT_AUTH_REDIRECT: ${{ inputs.accept_auth_redirect }}
+    steps:
+      - name: Reject fork pull request previews
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "::error::Fork pull request previews are not supported on this workflow."
+            exit 1
+          fi
+
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+
+      - name: Checkout workflow helper scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          repository: kgknutsson/github-workflows
+          ref: ${{ inputs.scripts_ref }}
+          path: kgk-github-workflows
+          sparse-checkout: |
+            .github/scripts/spa-app-service-wait-for-scm.sh
+            .github/scripts/spa-app-service-zip-deploy-retry.sh
+            .github/scripts/spa-app-service-verify-slot-http.sh
+            .github/scripts/spa-app-service-write-failure-summary.sh
+            .github/scripts/spa-app-service-run-caller-script.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # tag: v6
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
 
       - name: Export build environment
         shell: bash
@@ -187,23 +306,80 @@ jobs:
                   handle.write(f"{key}={text}\n")
           PY
 
+      - name: Login to Azure (pre-build secrets)
+        if: inputs.caller_pre_build_script != ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run caller pre-build script
+        if: inputs.caller_pre_build_script != ''
+        env:
+          CALLER_SCRIPT_PATH: ${{ inputs.caller_pre_build_script }}
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
+
       - name: Install and build
         shell: bash
         env:
           INSTALL_COMMAND: ${{ inputs.install_command }}
           BUILD_COMMAND: ${{ inputs.build_command }}
+          BUILD_LOG: ${{ runner.temp }}/spa-app-service-build.log
         run: |
           set -euo pipefail
-          bash -c "$INSTALL_COMMAND"
-          bash -c "$BUILD_COMMAND"
+          bash -c "$INSTALL_COMMAND" 2>&1 | tee "$BUILD_LOG"
+          bash -c "$BUILD_COMMAND" 2>&1 | tee -a "$BUILD_LOG"
 
-      - name: Zip-deploy the build
+      - name: Login to Azure (deploy)
+        if: inputs.caller_pre_build_script == ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Export caller prepare environment
+        if: inputs.caller_prepare_script != ''
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp_name }}
-          RESOURCE_GROUP: ${{ inputs.resource_group }}
-          SLOT_NAME: ${{ inputs.slot_name }}
-          OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
+          CALLER_PREPARE_ENV_JSON: ${{ inputs.caller_prepare_env_json }}
+        run: |
+          set -euo pipefail
+          python3 - "$CALLER_PREPARE_ENV_JSON" "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+          raw, path = sys.argv[1], sys.argv[2]
+          data = json.loads(raw)
+          if not isinstance(data, dict):
+              raise SystemExit("caller_prepare_env_json must be a JSON object")
+          with open(path, "a", encoding="utf-8") as handle:
+              for key, value in data.items():
+                  if not isinstance(key, str) or not key.replace("_", "").isalnum():
+                      raise SystemExit(f"unsupported caller prepare env name: {key}")
+                  text = "" if value is None else str(value)
+                  if "\n" in text or "\r" in text:
+                      raise SystemExit(f"unsupported caller prepare env value: {key}")
+                  handle.write(f"{key}={text}\n")
+          PY
+
+      - name: Run caller prepare script
+        if: inputs.caller_prepare_script != ''
+        env:
+          CALLER_SCRIPT_PATH: ${{ inputs.caller_prepare_script }}
+          PR_PREVIEW_AUTH_CLIENT_ID: ${{ secrets.PR_PREVIEW_AUTH_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
+
+      - name: Wait for SCM when the slot is new
+        if: needs.provision-slot.outputs.slot_created == 'true' || inputs.wait_for_scm_on_reused_slot == true
+        shell: bash
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-wait-for-scm.sh
+
+      - name: Zip-deploy with retries
+        shell: bash
+        env:
+          DEPLOY_LOG: ${{ runner.temp }}/spa-app-service-deploy.log
         run: |
           set -euo pipefail
           if [ ! -d "$OUTPUT_DIRECTORY" ]; then
@@ -211,49 +387,33 @@ jobs:
             exit 1
           fi
           (cd "$OUTPUT_DIRECTORY" && zip -qr "$RUNNER_TEMP/deploy.zip" .)
-          az webapp deploy \
-            --name "$WEBAPP_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --slot "$SLOT_NAME" \
-            --src-path "$RUNNER_TEMP/deploy.zip" \
-            --type zip
+          export ZIP_PATH="$RUNNER_TEMP/deploy.zip"
+          bash kgk-github-workflows/.github/scripts/spa-app-service-zip-deploy-retry.sh
 
-      - name: Publish the slot hostname
-        id: publish
+      - name: Verify slot HTTP response
+        if: inputs.health_path != ''
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp_name }}
-          RESOURCE_GROUP: ${{ inputs.resource_group }}
-          SLOT_NAME: ${{ inputs.slot_name }}
-          HEALTH_PATH: ${{ inputs.health_path }}
+          SLOT_HOST: ${{ needs.provision-slot.outputs.slot_hostname }}
+          VERIFY_LOG: ${{ runner.temp }}/spa-app-service-verify.log
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-verify-slot-http.sh
+
+      - name: Publish slot URL outputs
+        id: publish
+        shell: bash
         run: |
           set -euo pipefail
-          host="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query defaultHostName -o tsv)"
-          if [ -z "$host" ]; then
-            echo "::error::Azure did not return a slot hostname."
-            exit 1
-          fi
+          host="${{ needs.provision-slot.outputs.slot_hostname }}"
           echo "slot_hostname=$host" >> "$GITHUB_OUTPUT"
           echo "slot_url=https://$host" >> "$GITHUB_OUTPUT"
-          if [ -z "$HEALTH_PATH" ]; then
-            exit 0
-          fi
-          case "$HEALTH_PATH" in
-            /*) path="$HEALTH_PATH" ;;
-            *) path="/$HEALTH_PATH" ;;
-          esac
-          url="https://${host}${path}"
-          deadline=$((SECONDS + 120))
-          while [ "$SECONDS" -lt "$deadline" ]; do
-            set +e
-            status="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "$url")"
-            curl_exit=$?
-            set -e
-            if [ "$curl_exit" -eq 0 ] && [ "$status" = "200" ]; then
-              echo "Health check passed for $url"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "::error::Health check did not return HTTP 200: $url"
-          exit 1
+
+      - name: Write failure summary
+        id: failure_summary
+        if: failure()
+        shell: bash
+        env:
+          PHASE: deploy
+          DEPLOY_LOG: ${{ runner.temp }}/spa-app-service-deploy.log
+          VERIFY_LOG: ${{ runner.temp }}/spa-app-service-verify.log
+          BUILD_LOG: ${{ runner.temp }}/spa-app-service-build.log
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-write-failure-summary.sh

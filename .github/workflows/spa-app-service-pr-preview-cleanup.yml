@@ -34,6 +34,26 @@ on:
         type: string
         required: false
         default: ubuntu-latest
+      caller_pre_delete_script:
+        description: Optional script in the caller repo before the slot is deleted (private SCM teardown, and similar)
+        type: string
+        required: false
+        default: ""
+      caller_pre_delete_env_json:
+        description: JSON object exported before caller_pre_delete_script runs
+        type: string
+        required: false
+        default: "{}"
+      delete_pr_comment:
+        description: When true, delete the pull request comment that contains comment_marker
+        type: boolean
+        required: false
+        default: true
+      scripts_ref:
+        description: git ref in kgknutsson/github-workflows for helper scripts
+        type: string
+        required: false
+        default: dev
     secrets:
       AZURE_CLIENT_ID:
         required: true
@@ -41,6 +61,9 @@ on:
         required: true
       AZURE_TENANT_ID:
         required: true
+      ENTRA_APP_ID:
+        description: Optional Entra app id for redirect URI cleanup (prefer over entra_app_id input)
+        required: false
 
 jobs:
   cleanup:
@@ -48,7 +71,7 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
     concurrency:
-      group: spa-preview-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      group: spa-preview-slot-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -63,33 +86,56 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Delete the preview slot
+      - name: Checkout caller repository
+        if: inputs.caller_pre_delete_script != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+
+      - name: Export caller pre-delete environment
+        if: inputs.caller_pre_delete_script != ''
         shell: bash
         env:
+          CALLER_PRE_DELETE_ENV_JSON: ${{ inputs.caller_pre_delete_env_json }}
+        run: |
+          set -euo pipefail
+          python3 - "$CALLER_PRE_DELETE_ENV_JSON" "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+          raw, path = sys.argv[1], sys.argv[2]
+          data = json.loads(raw)
+          if not isinstance(data, dict):
+              raise SystemExit("caller_pre_delete_env_json must be a JSON object")
+          with open(path, "a", encoding="utf-8") as handle:
+              for key, value in data.items():
+                  if not isinstance(key, str) or not key.replace("_", "").isalnum():
+                      raise SystemExit(f"unsupported caller pre-delete env name: {key}")
+                  text = "" if value is None else str(value)
+                  if "\n" in text or "\r" in text:
+                      raise SystemExit(f"unsupported caller pre-delete env value: {key}")
+                  handle.write(f"{key}={text}\n")
+          PY
+
+      - name: Checkout workflow helper scripts
+        if: inputs.caller_pre_delete_script != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          repository: kgknutsson/github-workflows
+          ref: ${{ inputs.scripts_ref }}
+          path: kgk-github-workflows
+          sparse-checkout: |
+            .github/scripts/spa-app-service-run-caller-script.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Run caller pre-delete script
+        if: inputs.caller_pre_delete_script != ''
+        env:
+          CALLER_SCRIPT_PATH: ${{ inputs.caller_pre_delete_script }}
           WEBAPP_NAME: ${{ inputs.webapp_name }}
           RESOURCE_GROUP: ${{ inputs.resource_group }}
           SLOT_NAME: ${{ inputs.slot_name }}
-        run: |
-          set -euo pipefail
-          if [ "$SLOT_NAME" = "production" ] || [ "$SLOT_NAME" = "staging" ]; then
-            echo "::error::slot_name must name a preview slot."
-            exit 1
-          fi
-          if ! az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query name -o tsv >/dev/null; then
-            echo "Web app was not found. Nothing to delete."
-          else
-            existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
-            if [ "$existing" = "$SLOT_NAME" ]; then
-              az webapp deployment slot delete \
-                --name "$WEBAPP_NAME" \
-                --resource-group "$RESOURCE_GROUP" \
-                --slot "$SLOT_NAME"
-            else
-              echo "Slot $SLOT_NAME was not found."
-            fi
-          fi
+        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
 
       - name: Delete the preview comment
+        if: inputs.delete_pr_comment == true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -137,13 +183,45 @@ jobs:
                       "Accept": "application/vnd.github+json",
                   },
               )
-              with urllib.request.urlopen(delete):
-                  print(f"Deleted comment {comment['id']}")
+              try:
+                  with urllib.request.urlopen(delete):
+                      print(f"Deleted comment {comment['id']}")
+              except urllib.error.HTTPError as error:
+                  if error.code == 404:
+                      print(f"Comment {comment['id']} was already deleted.")
+                  else:
+                      raise
           PY
+
+      - name: Delete the preview slot
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SLOT_NAME: ${{ inputs.slot_name }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$SLOT_NAME" | grep -Eq '^pr-[0-9]+$'; then
+            echo "::error::slot_name must match pr-<number>."
+            exit 1
+          fi
+          if ! az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query name -o tsv >/dev/null; then
+            echo "Web app was not found. Nothing to delete."
+          else
+            existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
+            if [ "$existing" = "$SLOT_NAME" ]; then
+              az webapp deployment slot delete \
+                --name "$WEBAPP_NAME" \
+                --resource-group "$RESOURCE_GROUP" \
+                --slot "$SLOT_NAME"
+            else
+              echo "Slot $SLOT_NAME was not found."
+            fi
+          fi
 
   entra-redirects:
     needs: cleanup
-    if: inputs.entra_app_id != ''
+    if: always() && needs.cleanup.result != 'cancelled'
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
@@ -164,21 +242,28 @@ jobs:
       - name: Remove preview redirect URIs
         shell: bash
         env:
-          ENTRA_APP_ID: ${{ inputs.entra_app_id }}
+          ENTRA_APP_ID: ${{ secrets.ENTRA_APP_ID != '' && secrets.ENTRA_APP_ID || inputs.entra_app_id }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
+          if [ -z "$ENTRA_APP_ID" ]; then
+            echo "No Entra app id configured. Skip redirect URI cleanup."
+            exit 0
+          fi
           current="$(az ad app show --id "$ENTRA_APP_ID" --query "web.redirectUris" -o json)"
           if [ -z "$current" ] || [ "$current" = "null" ]; then
             current="[]"
           fi
-          filtered="$(printf '%s' "$current" | jq -c --arg token "pr-${PR_NUMBER}." '[.[] | select(contains($token) | not)]')"
+          filtered="$(printf '%s' "$current" | jq -c --arg num "$PR_NUMBER" '[.[] | select((contains("pr-" + $num + ".") or contains("pr-" + $num + "/")) | not)]')"
           if [ "$(printf '%s' "$current" | jq -c 'sort')" = "$(printf '%s' "$filtered" | jq -c 'sort')" ]; then
             echo "No matching redirect URIs."
             exit 0
           fi
           if [ "$filtered" = "[]" ]; then
-            az ad app update --id "$ENTRA_APP_ID" --set web.redirectUris=[]
+            app_object_id="$(az ad app show --id "$ENTRA_APP_ID" --query id -o tsv)"
+            az rest --method PATCH \
+              --uri "https://graph.microsoft.com/v1.0/applications/${app_object_id}" \
+              --body '{"web":{"redirectUris":[]}}'
           else
             mapfile -t uris < <(printf '%s' "$filtered" | jq -r '.[]')
             az ad app update --id "$ENTRA_APP_ID" --web-redirect-uris "${uris[@]}"
