@@ -249,9 +249,6 @@ jobs:
       OUTPUT_DIRECTORY: ${{ inputs.output_directory }}
       HEALTH_PATH: ${{ inputs.health_path }}
       ACCEPT_AUTH_REDIRECT: ${{ inputs.accept_auth_redirect }}
-      DEPLOY_LOG: ${{ runner.temp }}/spa-app-service-deploy.log
-      VERIFY_LOG: ${{ runner.temp }}/spa-app-service-verify.log
-      BUILD_LOG: ${{ runner.temp }}/spa-app-service-build.log
     steps:
       - name: Reject fork pull request previews
         if: github.event_name == 'pull_request'
@@ -328,6 +325,7 @@ jobs:
         env:
           INSTALL_COMMAND: ${{ inputs.install_command }}
           BUILD_COMMAND: ${{ inputs.build_command }}
+          BUILD_LOG: ${{ runner.temp }}/spa-app-service-build.log
         run: |
           set -euo pipefail
           bash -c "$INSTALL_COMMAND" 2>&1 | tee "$BUILD_LOG"
@@ -380,6 +378,8 @@ jobs:
 
       - name: Zip-deploy with retries
         shell: bash
+        env:
+          DEPLOY_LOG: ${{ runner.temp }}/spa-app-service-deploy.log
         run: |
           set -euo pipefail
           if [ ! -d "$OUTPUT_DIRECTORY" ]; then
@@ -395,6 +395,7 @@ jobs:
         shell: bash
         env:
           SLOT_HOST: ${{ needs.provision-slot.outputs.slot_hostname }}
+          VERIFY_LOG: ${{ runner.temp }}/spa-app-service-verify.log
         run: bash kgk-github-workflows/.github/scripts/spa-app-service-verify-slot-http.sh
 
       - name: Publish slot URL outputs
@@ -412,4 +413,7 @@ jobs:
         shell: bash
         env:
           PHASE: deploy
+          DEPLOY_LOG: ${{ runner.temp }}/spa-app-service-deploy.log
+          VERIFY_LOG: ${{ runner.temp }}/spa-app-service-verify.log
+          BUILD_LOG: ${{ runner.temp }}/spa-app-service-build.log
         run: bash kgk-github-workflows/.github/scripts/spa-app-service-write-failure-summary.sh
