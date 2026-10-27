@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   scan:
@@ -20,7 +21,8 @@ jobs:
       - name: Scan pushed revision
         if: github.event_name == 'push'
         env:
-          PUBLIC_REPO_DENYLIST: ${{ vars.PUBLIC_REPO_DENYLIST }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           DENYLIST_REQUIRED: "true"
           ALLOW_STRUCTURAL_ONLY: "false"
         run: python3 .github/scripts/scan-public-content.py
@@ -40,7 +42,7 @@ jobs:
         if: github.event_name == 'pull_request_target'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PUBLIC_REPO_DENYLIST: ${{ vars.PUBLIC_REPO_DENYLIST }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           DENYLIST_REQUIRED: "true"
           ALLOW_STRUCTURAL_ONLY: ${{ (github.actor == 'dependabot[bot]' || github.event.pull_request.head.repo.full_name != github.repository) && 'true' || 'false' }}
           SCAN_REPO: ${{ github.event.pull_request.head.repo.full_name }}

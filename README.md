@@ -111,3 +111,4 @@ A guard workflow scans each push.
 Set repository variable `PUBLIC_REPO_DENYLIST` under **Settings → Secrets and variables → Actions → Variables**.
 Use one term per line. Repo admins can view and edit this variable.
 For local commits, set `DENYLIST_FILE` to a path outside the repository and run `.githooks/pre-commit`.
+The guard loads this variable through the GitHub API. It does not print the list in workflow logs.

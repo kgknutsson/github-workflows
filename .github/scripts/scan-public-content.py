@@ -30,11 +30,43 @@ def redact_allowed(line):
     return redacted
 
 
-def load_terms():
-    raw = os.environ.get("PUBLIC_REPO_DENYLIST", "")
+def github_json(url, token):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": "Bearer " + token,
+            "User-Agent": "public-content-guard",
+        },
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
+
+
+def load_raw_denylist():
     path = os.environ.get("DENYLIST_FILE", "")
     if path and os.path.isfile(path):
-        raw = open(path, encoding="utf-8").read()
+        return open(path, encoding="utf-8").read()
+    raw = os.environ.get("PUBLIC_REPO_DENYLIST", "")
+    if raw.strip():
+        return raw
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    token = os.environ.get("GITHUB_TOKEN", "")
+    var_name = os.environ.get("DENYLIST_VARIABLE", "PUBLIC_REPO_DENYLIST")
+    if not repo or not token:
+        return ""
+    url = "https://api.github.com/repos/" + repo + "/actions/variables/" + var_name
+    try:
+        payload = github_json(url, token)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return ""
+        raise
+    return payload.get("value", "") or ""
+
+
+def load_terms():
+    raw = load_raw_denylist()
     terms = [
         line.strip()
         for line in raw.splitlines()
@@ -51,19 +83,6 @@ def load_terms():
         )
         raise SystemExit(1)
     return terms
-
-
-def github_json(url, token):
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": "Bearer " + token,
-            "User-Agent": "public-content-guard",
-        },
-    )
-    with urllib.request.urlopen(request) as response:
-        return json.load(response)
 
 
 def safe_path(path):
