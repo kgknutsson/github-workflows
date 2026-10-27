@@ -115,4 +115,4 @@ The guard loads the list through the GitHub API when possible. Otherwise it uses
 
 When you change the repository variable, update the repository secret with the same value. Example:
 
-`gh secret set PUBLIC_REPO_DENYLIST -R kgknutsson/REPO --body "$(gh variable get PUBLIC_REPO_DENYLIST -R kgknutsson/REPO)"`
+Run `gh secret set PUBLIC_REPO_DENYLIST` and `gh variable get PUBLIC_REPO_DENYLIST` against this repository. Use the same value in both places.
