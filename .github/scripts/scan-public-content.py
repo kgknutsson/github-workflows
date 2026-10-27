@@ -49,28 +49,22 @@ def load_raw_denylist():
     path = os.environ.get("DENYLIST_FILE", "")
     if path and os.path.isfile(path):
         return open(path, encoding="utf-8").read()
-    raw = os.environ.get("PUBLIC_REPO_DENYLIST", "")
-    if raw.strip():
-        return raw
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GITHUB_TOKEN", "")
     var_name = os.environ.get("DENYLIST_VARIABLE", "PUBLIC_REPO_DENYLIST")
-    if not repo or not token:
-        return ""
-    url = "https://api.github.com/repos/" + repo + "/actions/variables/" + var_name
-    try:
-        payload = github_json(url, token)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return ""
-        if exc.code == 403:
-            print(
-                "::error::Could not read PUBLIC_REPO_DENYLIST. Grant the workflow actions: read permission.",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
-        raise
-    return payload.get("value", "") or ""
+    if repo and token:
+        url = "https://api.github.com/repos/" + repo + "/actions/variables/" + var_name
+        try:
+            payload = github_json(url, token)
+            value = payload.get("value", "") or ""
+            if value.strip():
+                return value
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (403, 404):
+                raise
+    raw = os.environ.get("PUBLIC_REPO_DENYLIST", "")
+    return raw
+
 
 
 def load_terms():

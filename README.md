@@ -113,6 +113,6 @@ Use one term per line. Repo admins can view and edit this variable.
 For local commits, set `DENYLIST_FILE` to a path outside the repository and run `.githooks/pre-commit`.
 The guard loads the list through the GitHub API when possible. Otherwise it uses the masked repository secret `PUBLIC_REPO_DENYLIST`.
 
-When you change the repository variable, update the repository secret with the same value. Example:
+When you change the repository variable, refresh the masked secret from a clone of this repository:
 
-Run `gh secret set PUBLIC_REPO_DENYLIST` and `gh variable get PUBLIC_REPO_DENYLIST` against this repository. Use the same value in both places.
+`gh secret set PUBLIC_REPO_DENYLIST --body "$(gh variable get PUBLIC_REPO_DENYLIST)"`
