@@ -10,10 +10,6 @@ permissions:
 
 jobs:
   scan:
-    permissions:
-      contents: read
-      actions: read
-      metadata: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout trusted revision
@@ -27,6 +23,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          PUBLIC_REPO_DENYLIST: ${{ secrets.PUBLIC_REPO_DENYLIST }}
           DENYLIST_REQUIRED: "true"
           ALLOW_STRUCTURAL_ONLY: "false"
         run: python3 .github/scripts/scan-public-content.py
@@ -47,6 +44,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          PUBLIC_REPO_DENYLIST: ${{ secrets.PUBLIC_REPO_DENYLIST }}
           DENYLIST_REQUIRED: "true"
           ALLOW_STRUCTURAL_ONLY: ${{ (github.actor == 'dependabot[bot]' || github.event.pull_request.head.repo.full_name != github.repository) && 'true' || 'false' }}
           SCAN_REPO: ${{ github.event.pull_request.head.repo.full_name }}
