@@ -59,11 +59,9 @@ def load_raw_denylist():
             value = payload.get("value", "") or ""
             if value.strip():
                 return value
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (403, 404):
-                raise
-    raw = os.environ.get("PUBLIC_REPO_DENYLIST", "")
-    return raw
+        except Exception:
+            pass
+    return os.environ.get("PUBLIC_REPO_DENYLIST", "")
 
 
 
@@ -80,7 +78,7 @@ def load_terms():
         if structural_only:
             return []
         print(
-            "::error::The word list is empty. Set the PUBLIC_REPO_DENYLIST repository variable, or DENYLIST_FILE for local runs.",
+            "::error::The word list is empty. Set the PUBLIC_REPO_DENYLIST repository variable and secret, or DENYLIST_FILE for local runs.",
             file=sys.stderr,
         )
         raise SystemExit(1)
