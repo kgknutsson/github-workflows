@@ -38,6 +38,7 @@ def github_json(url, token):
             "Accept": "application/vnd.github+json",
             "Authorization": "Bearer " + token,
             "User-Agent": "public-content-guard",
+            "X-GitHub-Api-Version": "2022-11-28",
         },
     )
     with urllib.request.urlopen(request) as response:
@@ -62,6 +63,12 @@ def load_raw_denylist():
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return ""
+        if exc.code == 403:
+            print(
+                "::error::Could not read PUBLIC_REPO_DENYLIST. Grant the workflow actions: read permission.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         raise
     return payload.get("value", "") or ""
 

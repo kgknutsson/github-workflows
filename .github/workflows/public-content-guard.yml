@@ -10,6 +10,10 @@ permissions:
 
 jobs:
   scan:
+    permissions:
+      contents: read
+      actions: read
+      metadata: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout trusted revision
