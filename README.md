@@ -10,4 +10,7 @@ Optional input `manage_deploy_slot_lifecycle` (default `false`): when `true` wit
 Do not add organization names, product names, host names, tenant ids, or subscription ids to files.
 Pass a caller-specific runner label from the caller repository.
 A guard workflow scans each push.
-The word list stays outside this repository.
+
+Set repository variable `PUBLIC_REPO_DENYLIST` under **Settings → Secrets and variables → Actions → Variables**.
+Use one term per line. Repo admins can view and edit this variable.
+For local commits, set `DENYLIST_FILE` to a path outside the repository and run `.githooks/pre-commit`.

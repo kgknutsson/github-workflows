@@ -46,7 +46,7 @@ def load_terms():
         if structural_only:
             return []
         print(
-            "::error::The word list is empty. Set PUBLIC_REPO_DENYLIST or DENYLIST_FILE.",
+            "::error::The word list is empty. Set the PUBLIC_REPO_DENYLIST repository variable, or DENYLIST_FILE for local runs.",
             file=sys.stderr,
         )
         raise SystemExit(1)
