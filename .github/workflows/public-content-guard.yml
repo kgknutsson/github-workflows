@@ -1,0 +1,20 @@
+name: Public content guard
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+      - name: Scan tracked files
+        env:
+          PUBLIC_REPO_DENYLIST: ${{ secrets.PUBLIC_REPO_DENYLIST }}
+          DENYLIST_REQUIRED: "true"
+        run: python3 .github/scripts/scan-public-content.py
