@@ -64,11 +64,34 @@ on:
           When true with explicit_slot_swap, start the deploy slot (slot-name) before
           package deploy and stop it after production health checks pass, to free App
           Service plan memory between releases.
+      terraform_runner:
+        description: Runner for Terraform apply. Use a runner that can reach the state backend.
+        type: string
+        required: false
+        default: ubuntu-latest
+      deploy_runner:
+        description: Runner for package deploy when explicit_slot_swap is true.
+        type: string
+        required: false
+        default: ubuntu-latest
+      flyway_runner:
+        description: Runner for the Flyway job. Use a runner that can reach the database.
+        type: string
+        required: false
+        default: ubuntu-latest
+    secrets:
+      CLIENT_ID:
+        required: true
+      TENANT_ID:
+        required: true
+      SUBSCRIPTION_ID:
+        required: true
+      TF_STORAGE_ACCOUNT:
+        required: true
 
 jobs:
   terraform:
-    # Reach private Terraform state from the VNet runner.
-    runs-on: azure-linux-runner
+    runs-on: ${{ inputs.terraform_runner }}
     if: github.actor != 'dependabot[bot]'
     environment: ${{ inputs.environment }}
     permissions:
@@ -86,7 +109,7 @@ jobs:
 
   deploy:
     needs: [terraform]
-    runs-on: ${{ inputs.explicit_slot_swap && 'azure-linux-runner' || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.explicit_slot_swap && inputs.deploy_runner || 'ubuntu-latest' }}
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
@@ -377,7 +400,7 @@ jobs:
   flyway:
     needs: [terraform]
     if: inputs.flyway_script_locations != ''
-    runs-on: self-hosted
+    runs-on: ${{ inputs.flyway_runner }}
     permissions:
       contents: read
     steps:

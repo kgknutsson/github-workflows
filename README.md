@@ -96,8 +96,15 @@ Call this workflow with `@dev` until tag `v4` moves to a commit that contains th
 
 ## terraform-java-app-service.yml
 
-Java GitOps deploy with optional `explicit_slot_swap` (inline health-gated swap) and `manage_deploy_slot_lifecycle`. Terraform apply runs on `azure-linux-runner`. For ARM-based promotion without inline swap, use `azure-app-service-slot-promotion.yml` instead.
+Java GitOps deploy with optional `explicit_slot_swap` (inline health-gated swap) and `manage_deploy_slot_lifecycle`. Terraform apply uses the `terraform_runner` input. The default runner is `ubuntu-latest`. For ARM-based promotion without inline swap, use `azure-app-service-slot-promotion.yml` instead.
 
 ## java-testing-slot-deploy.yml
 
 Testing-slot deploy workflow (dev branch). See workflow inputs for Flyway `flyway_source_ref`.
+
+## Public content
+
+Do not add organization names, product names, host names, tenant ids, or subscription ids to files.
+Pass a caller-specific runner label from the caller repository.
+A guard workflow scans each push.
+The word list stays outside this repository.

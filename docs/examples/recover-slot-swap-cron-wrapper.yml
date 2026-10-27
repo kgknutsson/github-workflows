@@ -72,7 +72,7 @@ jobs:
       webapp-name: ${{ vars.AZURE_WEBAPP_NAME_DEVELOP }}
       resource-group: ${{ vars.AZURE_RESOURCE_GROUP_DEVELOP }}
       health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_DEVELOP }}.azurewebsites.net/api/readiness
-      health-check-header-name: x-kgk-readiness-token
+      health-check-header-name: x-readiness-token
       scripts-ref: dev
     secrets:
       CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -90,7 +90,7 @@ jobs:
       webapp-name: ${{ vars.AZURE_WEBAPP_NAME_TEST }}
       resource-group: ${{ vars.AZURE_RESOURCE_GROUP_TEST }}
       health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_TEST }}.azurewebsites.net/api/readiness
-      health-check-header-name: x-kgk-readiness-token
+      health-check-header-name: x-readiness-token
       scripts-ref: dev
     secrets:
       CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -108,7 +108,7 @@ jobs:
       webapp-name: ${{ vars.AZURE_WEBAPP_NAME_PRODUCTION }}
       resource-group: ${{ vars.AZURE_RESOURCE_GROUP_PRODUCTION }}
       health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_PRODUCTION }}.azurewebsites.net/api/readiness
-      health-check-header-name: x-kgk-readiness-token
+      health-check-header-name: x-readiness-token
       scripts-ref: dev
     secrets:
       CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -180,7 +180,7 @@ jobs:
       fail-fast: false
       matrix:
         environment: ${{ fromJson(github.event_name == 'schedule' && needs.plan-scheduled-recoveries.outputs.environments || needs.resolve-recovery-environments.outputs.dispatch_environments) }}
-    runs-on: azure-linux-runner
+    runs-on: ubuntu-latest
     environment: ${{ matrix.environment }}
     steps:
       - name: Run app recovery reconciliation

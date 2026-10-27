@@ -26,7 +26,7 @@ on:
         required: false
         default: '200'
       health-check-header-name:
-        description: Optional HTTP header name (for example x-kgk-readiness-token).
+        description: Optional HTTP header name (for example x-readiness-token).
         type: string
         required: false
         default: ''
@@ -35,23 +35,23 @@ on:
         required: false
         default: 3
       recovery-state-setting:
+        description: App Service application setting that stores recovery state.
         type: string
-        required: false
-        default: KGK_SLOT_SWAP_RECOVERY_STATE
+        required: true
       run-id-setting:
+        description: App Service application setting that stores the recovery run id.
         type: string
-        required: false
-        default: KGK_SLOT_SWAP_RUN_ID
+        required: true
       scripts-ref:
-        description: Git ref of kgknutsson/github-workflows to load guard scripts from.
+        description: Git ref of this repository. Use it to load guard scripts.
         type: string
         required: false
         default: dev
       runner:
-        description: Runner label (use azure-linux-runner when health endpoints are private).
+        description: Runner label. Use a runner that can reach private health endpoints.
         type: string
         required: false
-        default: azure-linux-runner
+        default: ubuntu-latest
     secrets:
       CLIENT_ID:
         required: true
@@ -82,9 +82,9 @@ jobs:
       - name: Checkout guard scripts
         uses: actions/checkout@v4
         with:
-          repository: kgknutsson/github-workflows
+          repository: ${{ github.repository }}
           ref: ${{ inputs.scripts-ref }}
-          path: kgk-github-workflows
+          path: reusable-workflows
           sparse-checkout: |
             .github/scripts/azure-app-service-slot-swap-guards.sh
           sparse-checkout-cone-mode: false
@@ -111,7 +111,7 @@ jobs:
           RUN_ID_SETTING: ${{ inputs.run-id-setting }}
         run: |
           set -euo pipefail
-          result=$(bash kgk-github-workflows/.github/scripts/azure-app-service-slot-swap-guards.sh scheduled-preflight | tail -n1)
+          result=$(bash reusable-workflows/.github/scripts/azure-app-service-slot-swap-guards.sh scheduled-preflight | tail -n1)
           case "$result" in
             scheduled-preflight-needed=true)
               echo "recovery-needed=true" >> "$GITHUB_OUTPUT"

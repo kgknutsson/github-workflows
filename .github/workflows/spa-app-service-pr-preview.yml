@@ -90,7 +90,7 @@ on:
         required: false
         default: ""
       scripts_ref:
-        description: git ref in kgknutsson/github-workflows used to fetch helper scripts
+        description: Git ref in this repository. Use it to fetch helper scripts.
         type: string
         required: false
         default: dev
@@ -266,9 +266,9 @@ jobs:
       - name: Checkout workflow helper scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
         with:
-          repository: kgknutsson/github-workflows
+          repository: ${{ github.repository }}
           ref: ${{ inputs.scripts_ref }}
-          path: kgk-github-workflows
+          path: reusable-workflows
           sparse-checkout: |
             .github/scripts/spa-app-service-wait-for-scm.sh
             .github/scripts/spa-app-service-zip-deploy-retry.sh
@@ -318,7 +318,7 @@ jobs:
         if: inputs.caller_pre_build_script != ''
         env:
           CALLER_SCRIPT_PATH: ${{ inputs.caller_pre_build_script }}
-        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
+        run: bash reusable-workflows/.github/scripts/spa-app-service-run-caller-script.sh
 
       - name: Install and build
         shell: bash
@@ -369,12 +369,12 @@ jobs:
           CALLER_SCRIPT_PATH: ${{ inputs.caller_prepare_script }}
           PR_PREVIEW_AUTH_CLIENT_ID: ${{ secrets.PR_PREVIEW_AUTH_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
+        run: bash reusable-workflows/.github/scripts/spa-app-service-run-caller-script.sh
 
       - name: Wait for SCM when the slot is new
         if: needs.provision-slot.outputs.slot_created == 'true' || inputs.wait_for_scm_on_reused_slot == true
         shell: bash
-        run: bash kgk-github-workflows/.github/scripts/spa-app-service-wait-for-scm.sh
+        run: bash reusable-workflows/.github/scripts/spa-app-service-wait-for-scm.sh
 
       - name: Zip-deploy with retries
         shell: bash
@@ -388,7 +388,7 @@ jobs:
           fi
           (cd "$OUTPUT_DIRECTORY" && zip -qr "$RUNNER_TEMP/deploy.zip" .)
           export ZIP_PATH="$RUNNER_TEMP/deploy.zip"
-          bash kgk-github-workflows/.github/scripts/spa-app-service-zip-deploy-retry.sh
+          bash reusable-workflows/.github/scripts/spa-app-service-zip-deploy-retry.sh
 
       - name: Verify slot HTTP response
         if: inputs.health_path != ''
@@ -396,7 +396,7 @@ jobs:
         env:
           SLOT_HOST: ${{ needs.provision-slot.outputs.slot_hostname }}
           VERIFY_LOG: ${{ runner.temp }}/spa-app-service-verify.log
-        run: bash kgk-github-workflows/.github/scripts/spa-app-service-verify-slot-http.sh
+        run: bash reusable-workflows/.github/scripts/spa-app-service-verify-slot-http.sh
 
       - name: Publish slot URL outputs
         id: publish
@@ -416,4 +416,4 @@ jobs:
           DEPLOY_LOG: ${{ runner.temp }}/spa-app-service-deploy.log
           VERIFY_LOG: ${{ runner.temp }}/spa-app-service-verify.log
           BUILD_LOG: ${{ runner.temp }}/spa-app-service-build.log
-        run: bash kgk-github-workflows/.github/scripts/spa-app-service-write-failure-summary.sh
+        run: bash reusable-workflows/.github/scripts/spa-app-service-write-failure-summary.sh

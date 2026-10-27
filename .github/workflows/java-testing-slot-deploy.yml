@@ -42,6 +42,11 @@ on:
         type: boolean
         required: false
         default: false
+      flyway_runner:
+        description: Runner for the Flyway job. Use a runner that can reach the database.
+        type: string
+        required: false
+        default: ubuntu-latest
 
 concurrency:
   group: java-testing-slot-${{ inputs.environment }}-${{ inputs.app_name }}-${{ inputs.slot_name }}
@@ -112,7 +117,7 @@ jobs:
 
   flyway:
     needs: [stop-slot-before-flyway]
-    runs-on: self-hosted
+    runs-on: ${{ inputs.flyway_runner }}
     permissions:
       contents: read
     steps:

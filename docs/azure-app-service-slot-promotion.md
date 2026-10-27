@@ -13,7 +13,7 @@ For recovery metadata, cron wrappers, and guard patterns see [slot-swap-guards-a
 | GitHub Environment | Pass required input `environment` (for example `prod`). The reusable job binds it for approval gates. OIDC secrets `CLIENT_ID`, `TENANT_ID`, `SUBSCRIPTION_ID` must exist on that environment. |
 | Azure RBAC | Identity can deploy to the staging slot and run `Microsoft.Web/sites/slots/slotsswap/action`. |
 | Terraform | `auto_swap_slot_name` must be **disabled** on the staging slot. AutoSwap drift fails preflight. |
-| Runner | Default `azure-linux-runner` when health endpoints are behind access restrictions. Use `ubuntu-latest` only when staging and production URLs are reachable from GitHub-hosted runners. |
+| Runner | The `runner` input defaults to `ubuntu-latest`. Pass a runner that can reach private health endpoints. |
 | Health | Staging health must pass before ARM swap. Production health runs after swap. Configure `health-check-url` or `health-check-path` / App Service `healthCheckPath`. |
 | Pinning | Pin the reusable workflow ref **and** pass the same ref in `scripts-ref` (for example `dev` or `v4`). |
 | Slot lifecycle | Optional `manage_deploy_slot_lifecycle: true` starts the staging slot before deploy or health checks and stops it after production health passes. |
@@ -87,4 +87,4 @@ jobs:
 
 ## Migration note
 
-This ticket does **not** switch production consumers (for example Autoexperten). After merge to `dev`, migrate one dev environment first, then document prod approval in the consumer repo.
+This workflow does not switch production callers by itself. Migrate one non-production environment first.

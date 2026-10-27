@@ -50,7 +50,7 @@ on:
         required: false
         default: true
       scripts_ref:
-        description: git ref in kgknutsson/github-workflows for helper scripts
+        description: Git ref in this repository. Use it to fetch helper scripts.
         type: string
         required: false
         default: dev
@@ -118,9 +118,9 @@ jobs:
         if: inputs.caller_pre_delete_script != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
         with:
-          repository: kgknutsson/github-workflows
+          repository: ${{ github.repository }}
           ref: ${{ inputs.scripts_ref }}
-          path: kgk-github-workflows
+          path: reusable-workflows
           sparse-checkout: |
             .github/scripts/spa-app-service-run-caller-script.sh
           sparse-checkout-cone-mode: false
@@ -132,7 +132,7 @@ jobs:
           WEBAPP_NAME: ${{ inputs.webapp_name }}
           RESOURCE_GROUP: ${{ inputs.resource_group }}
           SLOT_NAME: ${{ inputs.slot_name }}
-        run: bash kgk-github-workflows/.github/scripts/spa-app-service-run-caller-script.sh
+        run: bash reusable-workflows/.github/scripts/spa-app-service-run-caller-script.sh
 
       - name: Delete the preview comment
         if: inputs.delete_pr_comment == true
