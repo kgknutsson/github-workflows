@@ -42,6 +42,16 @@ on:
         type: boolean
         required: false
         default: false
+      terraform_runner:
+        description: Runner for Terraform apply. Use a runner that can reach the state backend.
+        type: string
+        required: false
+        default: ubuntu-latest
+      flyway_runner:
+        description: Runner for the Flyway job. Use a runner that can reach the database.
+        type: string
+        required: false
+        default: ubuntu-latest
 
 concurrency:
   group: java-testing-slot-${{ inputs.environment }}-${{ inputs.app_name }}-${{ inputs.slot_name }}
@@ -85,6 +95,7 @@ jobs:
       environment: ${{ inputs.environment }}
       slot-name: ${{ inputs.slot_name }}
       deploy-function: ${{ inputs.deploy_function }}
+      terraform_runner: ${{ inputs.terraform_runner }}
     secrets: inherit
 
   stop-slot-before-flyway:
@@ -112,7 +123,7 @@ jobs:
 
   flyway:
     needs: [stop-slot-before-flyway]
-    runs-on: self-hosted
+    runs-on: ${{ inputs.flyway_runner }}
     permissions:
       contents: read
     steps:

@@ -44,7 +44,7 @@ The preview jobs need `contents: read` and `id-token: write`.
 
 Use `caller_prepare_script` for repository-specific slot hardening (IP rules, Easy Auth, private SCM). Pass public values through `caller_prepare_env_json`.
 
-## Caller sketch (monorepo SPA matrix)
+## Caller sketch (SPA matrix)
 
 ```yaml
 deploy-webapp-apps:
@@ -56,11 +56,11 @@ deploy-webapp-apps:
   permissions:
     contents: read
     id-token: write
-  uses: kgknutsson/github-workflows/.github/workflows/spa-app-service-pr-preview.yml@dev # internal v4 line; commit pin after merge
+  uses: kgknutsson/github-workflows/.github/workflows/spa-app-service-pr-preview.yml@dev # pin a commit after merge
   with:
     environment: dev
-    webapp_name: app-kgk-${{ matrix.name }}frontend-dev-swce
-    resource_group: rg-kgk-frontend-dev-swce
+    webapp_name: app-example-${{ matrix.name }}frontend-dev
+    resource_group: rg-example-frontend-dev
     slot_name: pr-${{ github.event.pull_request.number }}
     node_version: "22"
     install_command: yarn install --frozen-lockfile
@@ -68,7 +68,7 @@ deploy-webapp-apps:
     output_directory: dist/apps/${{ matrix.name }}
     health_path: /health
     accept_auth_redirect: true
-    caller_prepare_script: .github/scripts/pr-preview-monorepo-spa-slot-prepare.sh
+    caller_prepare_script: .github/scripts/pr-preview-spa-slot-prepare.sh
     caller_prepare_env_json: ${{ format('{{"APP_SLUG":"{0}","PR_NUMBER":"{1}"}}', matrix.name, github.event.pull_request.number) }}
     runner: ubuntu-latest
     scripts_ref: dev

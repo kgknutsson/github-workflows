@@ -10,18 +10,18 @@ This document explains how **promotion**, **inline Terraform swap**, **recovery 
 | **Deploy package + promote** | One workflow builds, uploads artifact, then promotes | Same reusable workflow (`package-artifact-name`) |
 | **Inline Terraform / Java deploy** | Existing `terraform-java-app-service.yml` with `explicit_slot_swap: true` | `az webapp deployment slot swap` inside deploy job |
 
-The promotion reusable uses ARM `slotsswap` with activity-log correlation (ITCO-1417 / monorepo reference). The Java workflow keeps health-gated `az webapp deployment slot swap` for GitOps consumers that already use that contract.
+The promotion reusable uses ARM `slotsswap` with activity-log correlation. The Java workflow keeps health-gated `az webapp deployment slot swap` for callers that already use that contract.
 
 Do **not** enable Azure AutoSwap on the staging slot when GitHub Actions owns promotion. The promotion workflow fails preflight if AutoSwap is on.
 
 ## Recovery metadata (app repo)
 
-Interrupted swaps and deployment markers use App Service settings (KGK convention):
+Interrupted swaps and deployment markers use App Service application settings:
 
 | Setting | Role |
 |---------|------|
-| `KGK_SLOT_SWAP_RECOVERY_STATE` | `healthy`, `swap-pending`, `rollback-pending`, or empty |
-| `KGK_SLOT_SWAP_RUN_ID` | `run-<id>-<attempt>` marker on production or staging |
+| `SLOT_SWAP_RECOVERY_STATE` | Example setting name. Values are `healthy`, `swap-pending`, `rollback-pending`, or empty. |
+| `SLOT_SWAP_RUN_ID` | Example setting name. The value is a `run-<id>-<attempt>` marker on production or staging. |
 
 **Full reconciliation** (queue, lease, rollback, GitHub run correlation) is **application-specific**. It depends on your deployment workflow name, paths, and scripts (see `ecom-cv-site-frontend` `recover-slot-swap.yml`).
 
@@ -76,4 +76,4 @@ Pin `@dev` or `@v4` (when tagged) on reusable workflows **and** pass the same re
 
 ## Slack production notify (optional)
 
-Production deploy Slack notification lives on PR #13 (`prod-deploy-slack-notify.yml`, branch `ITCO-1174-feat/prod-deploy-slack-notify`). It is independent of slot promotion; merge or pin separately when ready.
+Production deploy Slack notification is `prod-deploy-slack-notify.yml`. It is independent of slot promotion.

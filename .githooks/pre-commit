@@ -1,0 +1,9 @@
+#!/bin/sh
+if [ -z "${DENYLIST_FILE:-}" ]; then
+  exit 0
+fi
+export SCAN_INDEX=true
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 .github/scripts/scan-public-content.py
+fi
+exec python .github/scripts/scan-public-content.py

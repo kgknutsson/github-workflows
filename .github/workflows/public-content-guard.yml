@@ -1,0 +1,48 @@
+name: Public content guard
+
+on:
+  pull_request_target:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted revision
+        if: github.event_name == 'push'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          persist-credentials: false
+
+      - name: Scan pushed revision
+        if: github.event_name == 'push'
+        env:
+          PUBLIC_REPO_DENYLIST: ${{ secrets.PUBLIC_REPO_DENYLIST }}
+          DENYLIST_REQUIRED: "true"
+          ALLOW_STRUCTURAL_ONLY: "false"
+        run: python3 .github/scripts/scan-public-content.py
+
+      - name: Checkout base scanner
+        if: github.event_name == 'pull_request_target'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Save trusted scanner
+        if: github.event_name == 'pull_request_target'
+        run: cp .github/scripts/scan-public-content.py /tmp/scan-public-content.py
+
+      - name: Scan proposed files
+        if: github.event_name == 'pull_request_target'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PUBLIC_REPO_DENYLIST: ${{ secrets.PUBLIC_REPO_DENYLIST }}
+          DENYLIST_REQUIRED: "true"
+          ALLOW_STRUCTURAL_ONLY: ${{ (github.actor == 'dependabot[bot]' || github.event.pull_request.head.repo.full_name != github.repository) && 'true' || 'false' }}
+          SCAN_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          SCAN_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 /tmp/scan-public-content.py

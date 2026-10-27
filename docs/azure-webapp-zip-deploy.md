@@ -9,7 +9,7 @@ Pair it with `azure-app-service-slot-promotion.yml` for production releases:
 
 Pin the caller and `scripts-ref` on promotion to the same ref (`@v4` or `@dev`).
 
-## Example (monorepo SPA prod)
+## Example (SPA production)
 
 ```yaml
 jobs:
@@ -21,8 +21,8 @@ jobs:
     uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-slot-promotion.yml@v4
     with:
       environment: webapp-prod
-      webapp-name: app-kgk-fleetfrontend-prd-swce
-      resource-group: rg-kgk-frontend-prd-swce
+      webapp-name: app-example-frontend-prod
+      resource-group: rg-example-frontend-prod
       package-artifact-name: webapp-fleet
       health-check-path: /health
       manage_deploy_slot_lifecycle: true

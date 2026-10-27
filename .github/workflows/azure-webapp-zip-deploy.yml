@@ -53,10 +53,10 @@ on:
         required: false
         default: 10
       runner:
-        description: Runner label (use azure-linux-runner when the app is private).
+        description: Runner label. Use a runner that can reach a private app.
         type: string
         required: false
-        default: azure-linux-runner
+        default: ubuntu-latest
     secrets:
       CLIENT_ID:
         required: true
