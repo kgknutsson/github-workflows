@@ -37,10 +37,10 @@ on:
         required: false
         default: 5m
       runner:
-        description: Use azure-linux-runner when state or providers are private
+        description: Use a runner that can reach private state or providers.
         type: string
         required: false
-        default: azure-linux-runner
+        default: ubuntu-latest
     secrets:
       AZURE_CLIENT_ID:
         required: true

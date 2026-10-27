@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-RECOVERY_STATE_SETTING="${RECOVERY_STATE_SETTING:-KGK_SLOT_SWAP_RECOVERY_STATE}"
-RUN_ID_SETTING="${RUN_ID_SETTING:-KGK_SLOT_SWAP_RUN_ID}"
+RECOVERY_STATE_SETTING="${RECOVERY_STATE_SETTING:?recovery-state-setting is required}"
+RUN_ID_SETTING="${RUN_ID_SETTING:?run-id-setting is required}"
 
 normalize_setting() {
   case "$1" in

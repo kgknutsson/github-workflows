@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Safe Azure App Service staging → production promotion (ARM REST + activity-log correlation).
-# Reference behavior: kgknutsson/monorepo PR #1145 (ITCO-1417).
 
 set -euo pipefail
 

@@ -96,8 +96,23 @@ Call this workflow with `@dev` until tag `v4` moves to a commit that contains th
 
 ## terraform-java-app-service.yml
 
-Java GitOps deploy with optional `explicit_slot_swap` (inline health-gated swap) and `manage_deploy_slot_lifecycle`. Terraform apply runs on `azure-linux-runner`. For ARM-based promotion without inline swap, use `azure-app-service-slot-promotion.yml` instead.
+Java GitOps deploy with optional `explicit_slot_swap` (inline health-gated swap) and `manage_deploy_slot_lifecycle`. Terraform apply uses the `terraform_runner` input. The default runner is `ubuntu-latest`. For ARM-based promotion without inline swap, use `azure-app-service-slot-promotion.yml` instead.
 
 ## java-testing-slot-deploy.yml
 
 Testing-slot deploy workflow (dev branch). See workflow inputs for Flyway `flyway_source_ref`.
+
+## Public content
+
+Do not add organization names, product names, host names, tenant ids, or subscription ids to files.
+Pass a caller-specific runner label from the caller repository.
+A guard workflow scans each push.
+
+Set repository variable `PUBLIC_REPO_DENYLIST` under **Settings → Secrets and variables → Actions → Variables**.
+Use one term per line. Repo admins can view and edit this variable.
+For local commits, set `DENYLIST_FILE` to a path outside the repository and run `.githooks/pre-commit`.
+The guard loads the list through the GitHub API when possible. Otherwise it uses the masked repository secret `PUBLIC_REPO_DENYLIST`.
+
+When you change the repository variable, refresh the masked secret from a clone of this repository:
+
+`gh secret set PUBLIC_REPO_DENYLIST --body "$(gh variable get PUBLIC_REPO_DENYLIST)"`

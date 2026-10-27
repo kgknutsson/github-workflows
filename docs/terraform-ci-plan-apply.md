@@ -10,7 +10,7 @@ Three callable workflows. The caller repository owns `on:`, path filters, and br
 
 Call them from `dev` until tag `v4` moves to a commit that contains these files. After that, pin the full commit SHA.
 
-Credentialed jobs use `azure-linux-runner` by default. Pass `runner: ubuntu-latest` only when state and providers are reachable from a GitHub-hosted runner.
+Credentialed jobs use the `runner` input. The default is `ubuntu-latest`. Pass a runner that can reach private state and providers when you need one.
 
 ## Secrets
 
