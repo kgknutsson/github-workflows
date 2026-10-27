@@ -319,8 +319,8 @@ jobs:
           TARGET_SLOT: ${{ inputs.target-slot }}
         run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh rollback-swap
 
-      - name: Stop staging slot when lifecycle management is enabled
-        if: always() && inputs.manage_deploy_slot_lifecycle
+      - name: Stop staging slot after a healthy production promotion
+        if: inputs.manage_deploy_slot_lifecycle && steps.arm_promote.outcome == 'success' && steps.production_health.outcome == 'success'
         shell: bash
         env:
           WEBAPP_NAME: ${{ inputs.webapp-name }}

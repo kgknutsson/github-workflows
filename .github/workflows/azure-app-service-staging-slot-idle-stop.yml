@@ -1,0 +1,106 @@
+# Stop one staging slot when it is still running.
+# The caller owns on.schedule. Pass the deploy workflow concurrency group.
+# cancel-in-progress is false, so this job waits and does not cancel a deploy.
+
+name: Azure App Service staging slot idle stop
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment for OIDC secrets.
+        type: string
+        required: true
+      webapp-name:
+        description: Azure Web App name.
+        type: string
+        required: true
+      resource-group:
+        description: Resource group containing the web app. When empty, the job looks up the group from the web app name.
+        type: string
+        required: false
+        default: ''
+      staging-slot:
+        description: Slot to stop when it is running.
+        type: string
+        required: false
+        default: staging
+      concurrency-group:
+        description: >-
+          Use the same group name as the app deploy workflow.
+          This job sets cancel-in-progress to false so it waits for that deploy.
+        type: string
+        required: true
+      scripts-ref:
+        description: Git ref of kgknutsson/github-workflows that contains the slot script.
+        type: string
+        required: false
+        default: v4
+      runner:
+        description: Runner label.
+        type: string
+        required: false
+        default: ubuntu-latest
+    secrets:
+      CLIENT_ID:
+        required: true
+      TENANT_ID:
+        required: true
+      SUBSCRIPTION_ID:
+        required: true
+
+jobs:
+  stop:
+    name: Stop ${{ inputs.webapp-name }}/${{ inputs.staging-slot }}
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: ${{ inputs.concurrency-group }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout slot script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: kgknutsson/github-workflows
+          ref: ${{ inputs.scripts-ref }}
+          path: shared-workflows
+          sparse-checkout: |
+            .github/scripts/azure-app-service-slot-promotion.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+
+      - name: Resolve resource group
+        id: target
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+        run: |
+          set -euo pipefail
+          if [ -n "$RESOURCE_GROUP" ]; then
+            echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rg="$(az webapp list --query "[?name=='$WEBAPP_NAME'].resourceGroup" -o tsv)"
+          if [ -z "$rg" ]; then
+            echo "::error::No web app named $WEBAPP_NAME was found."
+            exit 1
+          fi
+          echo "resource_group=$rg" >> "$GITHUB_OUTPUT"
+
+      - name: Stop the slot when it is running
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ steps.target.outputs.resource_group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-stop
