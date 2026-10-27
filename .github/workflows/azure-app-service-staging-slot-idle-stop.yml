@@ -2,6 +2,8 @@
 # The caller owns on.schedule.
 # This job does not join the deploy concurrency group.
 # A shared group would cancel a deploy that is waiting in that group.
+# The stop takes a web app tag lock, checks again, and then stops the slot.
+# A deploy that uses the same lock cannot change the slot during that stop.
 # The stop skips when a named deploy workflow is queued or in progress.
 
 name: Azure App Service staging slot idle stop
@@ -149,11 +151,65 @@ jobs:
           echo "webapp_name=$WEBAPP_NAME" >> "$GITHUB_OUTPUT"
           echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
 
-      - name: Stop the slot when it is running
+      - name: Acquire slot mutation lock
+        id: slot_lock
         if: steps.busy.outputs.skip != 'true'
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ steps.target.outputs.webapp_name }}
+          RESOURCE_GROUP: ${{ steps.target.outputs.resource_group }}
+          LOCK_WAIT_SECONDS: "30"
+        run: |
+          set -euo pipefail
+          set +e
+          bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-acquire
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then
+            echo "The slot lock is held. Skip the stop."
+            echo "held=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
+          echo "held=true" >> "$GITHUB_OUTPUT"
+
+      - name: Recheck deploys under the slot lock
+        id: busy_locked
+        if: steps.busy.outputs.skip != 'true' && steps.slot_lock.outputs.held == 'true'
+        shell: bash
+        env:
+          DEPLOY_WORKFLOWS: ${{ inputs.deploy-workflows }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          set +e
+          bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh deploy-busy
+          code=$?
+          set -e
+          if [ "$code" -eq 2 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Stop the slot when it is running
+        if: steps.busy.outputs.skip != 'true' && steps.slot_lock.outputs.held == 'true' && steps.busy_locked.outputs.skip != 'true'
         shell: bash
         env:
           WEBAPP_NAME: ${{ steps.target.outputs.webapp_name }}
           RESOURCE_GROUP: ${{ steps.target.outputs.resource_group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
         run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-stop
+
+      - name: Release slot mutation lock
+        if: always() && steps.slot_lock.outputs.held == 'true'
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ steps.target.outputs.webapp_name }}
+          RESOURCE_GROUP: ${{ steps.target.outputs.resource_group }}
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release

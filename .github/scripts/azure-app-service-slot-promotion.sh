@@ -599,8 +599,193 @@ PY
   exit 1
 }
 
+cmd_deploy_busy() {
+  local raw file status count
+  if [[ -z "${DEPLOY_WORKFLOWS:-}" ]]; then
+    echo "::error::Set deploy-workflows so the stop can see an active deploy."
+    exit 1
+  fi
+  if [[ -z "${GH_TOKEN:-}" ]]; then
+    echo "::error::GH_TOKEN is not set."
+    exit 1
+  fi
+  IFS=',' read -ra files <<< "$DEPLOY_WORKFLOWS"
+  for raw in "${files[@]}"; do
+    file="${raw#"${raw%%[![:space:]]*}"}"
+    file="${file%"${file##*[![:space:]]}"}"
+    [[ -n "$file" ]] || continue
+    for status in queued in_progress waiting requested pending; do
+      count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${file}/runs?status=${status}&per_page=1" --jq '.total_count')"
+      if [[ "${count}" != "0" ]]; then
+        echo "A deploy is active. ${file} has a ${status} run."
+        exit 2
+      fi
+    done
+  done
+  echo "No named deploy is queued or running."
+}
+
+slot_lock_tag() {
+  printf 'github-actions-slot-lock'
+}
+
+slot_lock_owner() {
+  local run_id attempt
+  run_id="${LOCK_OWNER:-${GITHUB_RUN_ID:-}}"
+  attempt="${GITHUB_RUN_ATTEMPT:-1}"
+  if [[ -z "$run_id" ]]; then
+    echo "::error::GITHUB_RUN_ID is not set. Set LOCK_OWNER to identify the slot lock."
+    exit 1
+  fi
+  printf '%s:%s' "$run_id" "$attempt"
+}
+
+slot_lock_read() {
+  local site_id token url header_file body_file etag
+  require_var WEBAPP_NAME
+  require_var RESOURCE_GROUP
+  site_id="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query id --output tsv)"
+  token="$(az account get-access-token --resource https://management.azure.com/ --query accessToken --output tsv)"
+  if [[ -z "$site_id" || -z "$token" ]]; then
+    echo "::error::Could not read the web app for the slot lock."
+    exit 1
+  fi
+  url="https://management.azure.com${site_id}?api-version=2024-11-01"
+  header_file="$(mktemp)"
+  body_file="$(mktemp)"
+  if ! curl --silent --show-error --fail \
+    -D "$header_file" \
+    -o "$body_file" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/json" \
+    "$url"; then
+    rm -f "$header_file" "$body_file"
+    echo "::error::Could not read web app tags for the slot lock."
+    exit 1
+  fi
+  etag="$(sed -n 's/\r$//; s/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p' "$header_file" | head -n 1)"
+  rm -f "$header_file"
+  if [[ -z "$etag" ]]; then
+    rm -f "$body_file"
+    echo "::error::The web app response did not include an ETag."
+    exit 1
+  fi
+  SLOT_LOCK_URL="$url"
+  SLOT_LOCK_TOKEN="$token"
+  SLOT_LOCK_ETAG="$etag"
+  SLOT_LOCK_BODY="$body_file"
+}
+
+slot_lock_value() {
+  local body="$1"
+  jq -r --arg key "$(slot_lock_tag)" '.tags[$key] // empty' "$body"
+}
+
+slot_lock_held_by_us() {
+  local value="$1"
+  local owner
+  owner="$(slot_lock_owner)"
+  [[ "$value" == "${owner}:"* ]]
+}
+
+slot_lock_is_stale() {
+  local value="$1"
+  local epoch now stale_seconds age
+  stale_seconds="${LOCK_STALE_SECONDS:-21600}"
+  epoch="${value##*:}"
+  if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  now="$(date +%s)"
+  age=$((now - epoch))
+  [[ "$age" -gt "$stale_seconds" ]]
+}
+
+slot_lock_patch() {
+  local payload http err_file
+  payload="$1"
+  err_file="$(mktemp)"
+  http="$(curl --silent --show-error \
+    -o "$err_file" \
+    -w "%{http_code}" \
+    -X PATCH \
+    -H "Authorization: Bearer ${SLOT_LOCK_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -H "If-Match: ${SLOT_LOCK_ETAG}" \
+    -d "$payload" \
+    "$SLOT_LOCK_URL")" || true
+  rm -f "$err_file"
+  printf '%s' "$http"
+}
+
+cmd_lock_acquire() {
+  local wait_seconds deadline now value owner payload http key
+  wait_seconds="${LOCK_WAIT_SECONDS:-180}"
+  if [[ ! "$wait_seconds" =~ ^[0-9]+$ ]]; then
+    echo "::error::LOCK_WAIT_SECONDS must be a non-negative integer."
+    exit 1
+  fi
+  key="$(slot_lock_tag)"
+  owner="$(slot_lock_owner)"
+  deadline=$(( $(date +%s) + wait_seconds ))
+  while true; do
+    slot_lock_read
+    value="$(slot_lock_value "$SLOT_LOCK_BODY")"
+    now="$(date +%s)"
+    if [[ -z "$value" || $(slot_lock_held_by_us "$value" && echo yes || echo no) == yes || $(slot_lock_is_stale "$value" && echo yes || echo no) == yes ]]; then
+      payload="$(jq -c --arg key "$key" --arg value "${owner}:${now}" '
+        {tags: ((.tags // {}) + {($key): $value})}
+      ' "$SLOT_LOCK_BODY")"
+      http="$(slot_lock_patch "$payload")"
+      rm -f "$SLOT_LOCK_BODY"
+      if [[ "$http" == "200" || "$http" == "201" ]]; then
+        echo "Acquired the slot lock."
+        exit 0
+      fi
+      if [[ "$http" != "412" ]]; then
+        echo "::error::Could not write the slot lock. HTTP ${http}."
+        exit 1
+      fi
+    else
+      rm -f "$SLOT_LOCK_BODY"
+    fi
+    if [[ "$now" -ge "$deadline" ]]; then
+      echo "The slot lock is held by another run."
+      exit 2
+    fi
+    sleep 5
+  done
+}
+
+cmd_lock_release() {
+  local value payload http key
+  key="$(slot_lock_tag)"
+  slot_lock_read
+  value="$(slot_lock_value "$SLOT_LOCK_BODY")"
+  if ! slot_lock_held_by_us "$value"; then
+    rm -f "$SLOT_LOCK_BODY"
+    echo "This run does not hold the slot lock."
+    exit 0
+  fi
+  payload="$(jq -c --arg key "$key" '
+    {tags: ((.tags // {}) | del(.[$key]))}
+  ' "$SLOT_LOCK_BODY")"
+  http="$(slot_lock_patch "$payload")"
+  rm -f "$SLOT_LOCK_BODY"
+  if [[ "$http" == "200" || "$http" == "201" ]]; then
+    echo "Released the slot lock."
+    exit 0
+  fi
+  if [[ "$http" == "412" ]]; then
+    echo "::error::The slot lock changed before it could be released."
+    exit 1
+  fi
+  echo "::error::Could not release the slot lock. HTTP ${http}."
+  exit 1
+}
+
 usage() {
-  echo "Usage: $0 {autoswap-check|slot-start|slot-stop|staging-health|promote|production-health|smoke-test|rollback-swap}" >&2
+  echo "Usage: $0 {autoswap-check|slot-start|slot-stop|staging-health|promote|production-health|smoke-test|rollback-swap|lock-acquire|lock-release|deploy-busy}" >&2
   exit 1
 }
 
@@ -615,6 +800,9 @@ main() {
     production-health) cmd_production_health ;;
     smoke-test) cmd_smoke_test ;;
     rollback-swap) cmd_rollback_swap ;;
+    lock-acquire) cmd_lock_acquire ;;
+    lock-release) cmd_lock_release ;;
+    deploy-busy) cmd_deploy_busy ;;
     *) usage ;;
   esac
 }

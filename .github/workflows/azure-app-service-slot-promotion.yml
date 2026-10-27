@@ -232,6 +232,15 @@ jobs:
           tenant-id: ${{ secrets.TENANT_ID || secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Acquire slot mutation lock
+        id: slot_lock
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          LOCK_WAIT_SECONDS: "180"
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-acquire
+
       - name: Verify Azure AutoSwap is disabled
         shell: bash
         env:
@@ -343,3 +352,11 @@ jobs:
           SMOKE_TEST_MAX_WAIT_SECONDS: ${{ inputs.smoke-test-max-wait-seconds }}
           POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
         run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh smoke-test
+
+      - name: Release slot mutation lock
+        if: always() && steps.slot_lock.outcome == 'success'
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+        run: bash kgk-github-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release

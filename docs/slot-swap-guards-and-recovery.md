@@ -14,7 +14,7 @@ The promotion workflow and the Java explicit slot swap both call `.github/script
 
 Do **not** enable Azure AutoSwap on the staging slot when GitHub Actions owns promotion. The promotion workflow fails preflight if AutoSwap is on.
 
-Stop the staging slot only after production health passes. A failed promotion leaves the slot running so the failed build can be inspected. A weekly idle-stop caller stops that slot later. See [examples/staging-slot-idle-stop-cron.yml](examples/staging-slot-idle-stop-cron.yml). Keep the idle stop out of the deploy concurrency group. A shared group cancels a deploy that is waiting. The stop skips when a named deploy workflow is queued or in progress.
+Stop the staging slot only after production health passes. A failed promotion leaves the slot running so the failed build can be inspected. A weekly idle-stop caller stops that slot later. See [examples/staging-slot-idle-stop-cron.yml](examples/staging-slot-idle-stop-cron.yml). Keep the idle stop out of the deploy concurrency group. A shared group cancels a deploy that is waiting. The stop takes the web app tag `github-actions-slot-lock`, checks the named deploy workflows again, and then stops the slot. A deploy takes the same lock before it changes the slot.
 
 ## Recovery metadata (app repo)
 

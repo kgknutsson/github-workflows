@@ -148,6 +148,24 @@ jobs:
             echo "::error::manage_deploy_slot_lifecycle requires slot-name to be a non-production deployment slot"
             exit 1
           fi
+      - name: Checkout promotion scripts
+        if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: kgknutsson/github-workflows
+          ref: v4 # internal v4 tag; a commit hash is not required for this dependency
+          path: shared-workflows
+          sparse-checkout: |
+            .github/scripts/azure-app-service-slot-promotion.sh
+          sparse-checkout-cone-mode: false
+      - name: Acquire slot mutation lock
+        id: slot_lock
+        if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
+        env:
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          LOCK_WAIT_SECONDS: "180"
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-acquire
       - name: Start deploy slot before package deploy
         if: env.APPLICATION_CAF_NAME != '' && inputs.manage_deploy_slot_lifecycle && inputs.explicit_slot_swap && inputs.slot-name != 'production'
         env:
@@ -201,16 +219,6 @@ jobs:
           slot-name: ${{ inputs.slot-name }}
           package: ${{ inputs.package }}
           target-path: ${{ inputs.target-path }}
-      - name: Checkout promotion scripts
-        if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: kgknutsson/github-workflows
-          ref: v4 # internal v4 tag; a commit hash is not required for this dependency
-          path: shared-workflows
-          sparse-checkout: |
-            .github/scripts/azure-app-service-slot-promotion.sh
-          sparse-checkout-cone-mode: false
       - name: Verify staging slot health
         if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
         env:
@@ -324,6 +332,12 @@ jobs:
           done
 
           echo "::warning::Rollback health check did not pass - manual verification is required"
+      - name: Release slot mutation lock
+        if: always() && steps.slot_lock.outcome == 'success'
+        env:
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release
       - name: Deploy to Azure App Service
         if: env.APPLICATION_CAF_NAME != '' && inputs.slot-name2 != ''
         uses: azure/webapps-deploy@v3
