@@ -45,6 +45,11 @@ def github_json(url, token):
         return json.load(response)
 
 
+def fail_denylist(message):
+    print("::error::" + message, file=sys.stderr)
+    raise SystemExit(1)
+
+
 def load_raw_denylist():
     path = os.environ.get("DENYLIST_FILE", "")
     if path and os.path.isfile(path):
@@ -52,20 +57,48 @@ def load_raw_denylist():
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GITHUB_TOKEN", "")
     var_name = os.environ.get("DENYLIST_VARIABLE", "PUBLIC_REPO_DENYLIST")
-    if repo and token:
-        url = "https://api.github.com/repos/" + repo + "/actions/variables/" + var_name
-        try:
-            payload = github_json(url, token)
-            value = payload.get("value", "") or ""
-            if value.strip():
-                return value
-        except Exception:
-            pass
-    return os.environ.get("PUBLIC_REPO_DENYLIST", "")
-
+    if not repo or not token:
+        fail_denylist(
+            "Cannot load PUBLIC_REPO_DENYLIST: set GITHUB_REPOSITORY and GITHUB_TOKEN in CI, "
+            "or DENYLIST_FILE for local runs."
+        )
+    url = "https://api.github.com/repos/" + repo + "/actions/variables/" + var_name
+    try:
+        payload = github_json(url, token)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        fail_denylist(
+            "Cannot read repository variable "
+            + var_name
+            + " (HTTP "
+            + str(exc.code)
+            + "). Set "
+            + var_name
+            + " under Settings → Actions → Variables. The job needs actions: read permission. Re-run the workflow after you fix it. GitHub response: "
+            + detail
+        )
+    except urllib.error.URLError as exc:
+        fail_denylist(
+            "Cannot read repository variable " + var_name + ": " + str(exc.reason)
+        )
+    except json.JSONDecodeError as exc:
+        fail_denylist(
+            "Cannot parse GitHub API response for " + var_name + ": " + str(exc)
+        )
+    value = payload.get("value") or ""
+    if not value.strip():
+        fail_denylist(
+            "Repository variable "
+            + var_name
+            + " is empty. Set it under Settings → Actions → Variables and re-run the workflow."
+        )
+    return value
 
 
 def load_terms():
+    structural_only = os.environ.get("ALLOW_STRUCTURAL_ONLY", "false").lower() == "true"
+    if structural_only:
+        return []
     raw = load_raw_denylist()
     terms = [
         line.strip()
@@ -73,12 +106,9 @@ def load_terms():
         if line.strip() and not line.strip().startswith("#")
     ]
     required = os.environ.get("DENYLIST_REQUIRED", "true").lower() == "true"
-    structural_only = os.environ.get("ALLOW_STRUCTURAL_ONLY", "false").lower() == "true"
     if required and not terms:
-        if structural_only:
-            return []
         print(
-            "::error::The word list is empty. Set the PUBLIC_REPO_DENYLIST repository variable and secret, or DENYLIST_FILE for local runs.",
+            "::error::The word list is empty. Set the PUBLIC_REPO_DENYLIST repository variable, or DENYLIST_FILE for local runs.",
             file=sys.stderr,
         )
         raise SystemExit(1)
