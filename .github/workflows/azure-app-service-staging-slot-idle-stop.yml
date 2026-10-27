@@ -1,6 +1,8 @@
 # Stop one staging slot when it is still running.
-# The caller owns on.schedule. Pass the deploy workflow concurrency group.
-# cancel-in-progress is false, so this job waits and does not cancel a deploy.
+# The caller owns on.schedule.
+# This job does not join the deploy concurrency group.
+# A shared group would cancel a deploy that is waiting in that group.
+# The stop skips when a named deploy workflow is queued or in progress.
 
 name: Azure App Service staging slot idle stop
 
@@ -28,8 +30,14 @@ on:
         default: staging
       concurrency-group:
         description: >-
-          Use the same group name as the app deploy workflow.
-          This job sets cancel-in-progress to false so it waits for that deploy.
+          Key for this stop only. The job prefixes it and does not use the deploy group.
+          Two stops for the same key wait. A deploy in another group is left in place.
+        type: string
+        required: true
+      deploy-workflows:
+        description: >-
+          Comma-separated workflow file names, for example deploy-app.yml.
+          The stop skips when one of those workflows is queued or in progress.
         type: string
         required: true
       scripts-ref:
@@ -64,13 +72,43 @@ jobs:
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     concurrency:
-      group: ${{ inputs.concurrency-group }}
+      group: staging-slot-idle-stop-${{ inputs.concurrency-group }}
       cancel-in-progress: false
     permissions:
       id-token: write
       contents: read
+      actions: read
     steps:
+      - name: Skip when a deploy is queued or running
+        id: busy
+        shell: bash
+        env:
+          DEPLOY_WORKFLOWS: ${{ inputs.deploy-workflows }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_WORKFLOWS" ]; then
+            echo "::error::Set deploy-workflows so the stop can see an active deploy."
+            exit 1
+          fi
+          IFS=',' read -ra files <<< "$DEPLOY_WORKFLOWS"
+          for raw in "${files[@]}"; do
+            file="${raw#"${raw%%[![:space:]]*}"}"
+            file="${file%"${file##*[![:space:]]}"}"
+            [ -n "$file" ] || continue
+            for status in queued in_progress waiting requested pending; do
+              count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${file}/runs?status=${status}&per_page=1" --jq '.total_count')"
+              if [ "${count}" != "0" ]; then
+                echo "Skip stop. ${file} has a ${status} run."
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
+          done
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
       - name: Checkout slot script
+        if: steps.busy.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: kgknutsson/github-workflows
@@ -81,6 +119,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Login to Azure
+        if: steps.busy.outputs.skip != 'true'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:
           client-id: ${{ secrets.CLIENT_ID || secrets.AZURE_CLIENT_ID }}
@@ -88,6 +127,7 @@ jobs:
           subscription-id: ${{ secrets.SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Resolve resource group
+        if: steps.busy.outputs.skip != 'true'
         id: target
         shell: bash
         env:
@@ -110,6 +150,7 @@ jobs:
           echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
 
       - name: Stop the slot when it is running
+        if: steps.busy.outputs.skip != 'true'
         shell: bash
         env:
           WEBAPP_NAME: ${{ steps.target.outputs.webapp_name }}

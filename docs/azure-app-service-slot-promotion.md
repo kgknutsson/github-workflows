@@ -87,6 +87,6 @@ jobs:
 
 ## Idle stop and recovery
 
-A weekly caller can stop a staging slot that is still running. Use `.github/workflows/azure-app-service-staging-slot-idle-stop.yml`. Set `concurrency-group` to the same group as the app deploy workflow and keep `cancel-in-progress: false` on the stop job. The stop then waits. It does not cancel a running deploy.
+A weekly caller can stop a staging slot that is still running. Use `.github/workflows/azure-app-service-staging-slot-idle-stop.yml`. Keep that job out of the deploy concurrency group, because a shared group cancels a deploy that is waiting. Pass `deploy-workflows`. The stop skips when one of those workflows is queued or in progress.
 
 Recovery is a separate check. `azure-app-service-slot-swap-recovery-preflight.yml` reports whether metadata or production health needs reconciliation. The caller owns the schedule. The preflight does not swap and it does not stop the slot.
