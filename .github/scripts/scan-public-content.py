@@ -8,7 +8,7 @@ import subprocess
 import sys
 import urllib.request
 
-ALLOW = (
+ALLOWED_REPOS = (
     "kgknutsson/github-workflows",
     "kgknutsson/github-actions",
 )
@@ -16,9 +16,18 @@ GUID = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-OWNER = "kgknutsson"
-OTHER_OWNER = re.compile(OWNER + r"/(?!github-workflows\b|github-actions\b)")
 MAX_BYTES = 1_000_000
+
+
+def owner_prefix():
+    return ALLOWED_REPOS[0].split("/", 1)[0] + "/"
+
+
+def redact_allowed(line):
+    redacted = line
+    for name in ALLOWED_REPOS:
+        redacted = re.sub(re.escape(name) + r"(?![\w-])", "", redacted)
+    return redacted
 
 
 def load_terms():
@@ -32,7 +41,10 @@ def load_terms():
         if line.strip() and not line.strip().startswith("#")
     ]
     required = os.environ.get("DENYLIST_REQUIRED", "true").lower() == "true"
+    structural_only = os.environ.get("ALLOW_STRUCTURAL_ONLY", "false").lower() == "true"
     if required and not terms:
+        if structural_only:
+            return []
         print(
             "::error::The word list is empty. Set PUBLIC_REPO_DENYLIST or DENYLIST_FILE.",
             file=sys.stderr,
@@ -88,35 +100,58 @@ def download_tree(repo, sha, dest, token):
             handle.write(base64.b64decode(blob["content"]))
 
 
-def iter_files(root):
+def iter_working_files(root):
     scan_dir = os.environ.get("SCAN_DIR", "")
     if scan_dir:
         for dirpath, dirnames, filenames in os.walk(scan_dir):
             dirnames[:] = [name for name in dirnames if name != ".git"]
             for name in filenames:
                 full = os.path.join(dirpath, name)
-                yield os.path.relpath(full, scan_dir), full
+                yield os.path.relpath(full, scan_dir), full, None
         return
     listed = subprocess.check_output(["git", "ls-files", "-z"], cwd=root)
     for raw_path in listed.split(b"\0"):
         if not raw_path:
             continue
         path = raw_path.decode("utf-8", "surrogateescape")
-        yield path, os.path.join(root, path)
+        yield path, os.path.join(root, path), None
+
+
+def iter_index_files(root):
+    listed = subprocess.check_output(
+        ["git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
+        cwd=root,
+    )
+    for raw_path in listed.split(b"\0"):
+        if not raw_path:
+            continue
+        path = raw_path.decode("utf-8", "surrogateescape")
+        try:
+            content = subprocess.check_output(["git", "show", ":" + path], cwd=root)
+        except subprocess.CalledProcessError:
+            continue
+        yield path, None, content
 
 
 def line_failed(line, terms):
-    redacted = line
-    for allowed in ALLOW:
-        redacted = redacted.replace(allowed, "")
+    redacted = redact_allowed(line)
     structural = (
         GUID.search(redacted)
         or EMAIL.search(redacted)
         or ("atlassian" + ".net") in redacted.lower()
-        or OTHER_OWNER.search(redacted)
+        or owner_prefix() in redacted
     )
     denied = any(term.lower() in redacted.lower() for term in terms)
-    return structural or denied
+    return bool(structural or denied)
+
+
+def scan_text(path, text, terms):
+    failed = False
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line_failed(line, terms):
+            print(f"{path}:{number}: content rule failed")
+            failed = True
+    return failed
 
 
 def main():
@@ -136,17 +171,23 @@ def main():
         os.chdir(root)
     terms = load_terms()
     failed = False
-    for path, full in iter_files(root):
-        if not os.path.isfile(full):
-            continue
-        try:
-            text = open(full, encoding="utf-8").read()
-        except UnicodeDecodeError:
-            continue
-        for number, line in enumerate(text.splitlines(), start=1):
-            if line_failed(line, terms):
-                print(f"{path}:{number}: content rule failed")
-                failed = True
+    use_index = os.environ.get("SCAN_INDEX", "false").lower() == "true"
+    rows = iter_index_files(root) if use_index else iter_working_files(root)
+    for path, full, content in rows:
+        if content is None:
+            if not full or not os.path.isfile(full):
+                continue
+            try:
+                text = open(full, encoding="utf-8").read()
+            except UnicodeDecodeError:
+                continue
+        else:
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        if scan_text(path, text, terms):
+            failed = True
     raise SystemExit(1 if failed else 0)
 
 

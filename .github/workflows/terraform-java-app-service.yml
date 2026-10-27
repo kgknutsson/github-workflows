@@ -74,13 +74,13 @@ on:
         default: ubuntu-latest
     secrets:
       CLIENT_ID:
-        required: true
+        required: false
       TENANT_ID:
-        required: true
+        required: false
       SUBSCRIPTION_ID:
-        required: true
+        required: false
       TF_STORAGE_ACCOUNT:
-        required: true
+        required: false
 
 jobs:
   terraform:
