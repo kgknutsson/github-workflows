@@ -12,9 +12,10 @@ on:
         type: string
         required: true
       webapp-name:
-        description: Azure Web App name.
+        description: Azure Web App name. When empty, the job uses the AZURE_WEBAPP_NAME secret.
         type: string
-        required: true
+        required: false
+        default: ''
       resource-group:
         description: Resource group containing the web app. When empty, the job looks up the group from the web app name.
         type: string
@@ -54,6 +55,8 @@ on:
         required: false
       AZURE_SUBSCRIPTION_ID:
         required: false
+      AZURE_WEBAPP_NAME:
+        required: false
 
 jobs:
   stop:
@@ -88,25 +91,28 @@ jobs:
         id: target
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
         run: |
           set -euo pipefail
-          if [ -n "$RESOURCE_GROUP" ]; then
-            echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ -z "$WEBAPP_NAME" ]; then
+            echo "::error::Set webapp-name or the AZURE_WEBAPP_NAME secret."
+            exit 1
           fi
-          rg="$(az webapp list --query "[?name=='$WEBAPP_NAME'].resourceGroup" -o tsv)"
-          if [ -z "$rg" ]; then
+          if [ -z "$RESOURCE_GROUP" ]; then
+            RESOURCE_GROUP="$(az webapp list --query "[?name=='$WEBAPP_NAME'].resourceGroup" -o tsv)"
+          fi
+          if [ -z "$RESOURCE_GROUP" ]; then
             echo "::error::No web app named $WEBAPP_NAME was found."
             exit 1
           fi
-          echo "resource_group=$rg" >> "$GITHUB_OUTPUT"
+          echo "webapp_name=$WEBAPP_NAME" >> "$GITHUB_OUTPUT"
+          echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
 
       - name: Stop the slot when it is running
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ steps.target.outputs.webapp_name }}
           RESOURCE_GROUP: ${{ steps.target.outputs.resource_group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
         run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-stop
