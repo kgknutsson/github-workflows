@@ -82,7 +82,7 @@ jobs:
       - name: Checkout guard scripts
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository }}
+          repository: kgknutsson/github-workflows
           ref: ${{ inputs.scripts-ref }}
           path: reusable-workflows
           sparse-checkout: |

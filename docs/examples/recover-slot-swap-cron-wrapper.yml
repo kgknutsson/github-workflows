@@ -73,6 +73,8 @@ jobs:
       resource-group: ${{ vars.AZURE_RESOURCE_GROUP_DEVELOP }}
       health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_DEVELOP }}.azurewebsites.net/api/readiness
       health-check-header-name: x-readiness-token
+      recovery-state-setting: SLOT_SWAP_RECOVERY_STATE
+      run-id-setting: SLOT_SWAP_RUN_ID
       scripts-ref: dev
     secrets:
       CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -91,6 +93,8 @@ jobs:
       resource-group: ${{ vars.AZURE_RESOURCE_GROUP_TEST }}
       health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_TEST }}.azurewebsites.net/api/readiness
       health-check-header-name: x-readiness-token
+      recovery-state-setting: SLOT_SWAP_RECOVERY_STATE
+      run-id-setting: SLOT_SWAP_RUN_ID
       scripts-ref: dev
     secrets:
       CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -109,6 +113,8 @@ jobs:
       resource-group: ${{ vars.AZURE_RESOURCE_GROUP_PRODUCTION }}
       health-check-url: https://${{ vars.AZURE_WEBAPP_NAME_PRODUCTION }}.azurewebsites.net/api/readiness
       health-check-header-name: x-readiness-token
+      recovery-state-setting: SLOT_SWAP_RECOVERY_STATE
+      run-id-setting: SLOT_SWAP_RUN_ID
       scripts-ref: dev
     secrets:
       CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
