@@ -108,11 +108,12 @@ Do not add organization names, product names, host names, tenant ids, or subscri
 Pass a caller-specific runner label from the caller repository.
 A guard workflow scans each push.
 
-Set repository variable `PUBLIC_REPO_DENYLIST` under **Settings → Secrets and variables → Actions → Variables**.
-Use one term per line. Repo admins can view and edit this variable.
-For local commits, set `DENYLIST_FILE` to a path outside the repository and run `.githooks/pre-commit`.
-The guard loads the list through the GitHub API when possible. Otherwise it uses the masked repository secret `PUBLIC_REPO_DENYLIST`.
+Keep private terms in `.denylist.local` in your clone. Put one term on each line. Git ignores that file.
 
-When you change the repository variable, refresh the masked secret from a clone of this repository:
+Run this command once in each clone:
 
-`gh secret set PUBLIC_REPO_DENYLIST --body "$(gh variable get PUBLIC_REPO_DENYLIST)"`
+`git config core.hooksPath .githooks`
+
+The pre-commit hook reads `.denylist.local` and scans staged files. If that file is missing, the hook fails.
+
+The guard workflow on each push checks built-in patterns only. Those patterns are a GUID, an email address, an Atlassian site host, and the owner prefix. The workflow does not read the private word list.
