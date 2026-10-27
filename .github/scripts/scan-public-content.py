@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 
 ALLOWED_REPOS = (
@@ -30,11 +31,44 @@ def redact_allowed(line):
     return redacted
 
 
-def load_terms():
-    raw = os.environ.get("PUBLIC_REPO_DENYLIST", "")
+def github_json(url, token):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": "Bearer " + token,
+            "User-Agent": "public-content-guard",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
+
+
+def load_raw_denylist():
     path = os.environ.get("DENYLIST_FILE", "")
     if path and os.path.isfile(path):
-        raw = open(path, encoding="utf-8").read()
+        return open(path, encoding="utf-8").read()
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    token = os.environ.get("GITHUB_TOKEN", "")
+    var_name = os.environ.get("DENYLIST_VARIABLE", "PUBLIC_REPO_DENYLIST")
+    if repo and token:
+        url = "https://api.github.com/repos/" + repo + "/actions/variables/" + var_name
+        try:
+            payload = github_json(url, token)
+            value = payload.get("value", "") or ""
+            if value.strip():
+                return value
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (403, 404):
+                raise
+    raw = os.environ.get("PUBLIC_REPO_DENYLIST", "")
+    return raw
+
+
+
+def load_terms():
+    raw = load_raw_denylist()
     terms = [
         line.strip()
         for line in raw.splitlines()
@@ -51,19 +85,6 @@ def load_terms():
         )
         raise SystemExit(1)
     return terms
-
-
-def github_json(url, token):
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": "Bearer " + token,
-            "User-Agent": "public-content-guard",
-        },
-    )
-    with urllib.request.urlopen(request) as response:
-        return json.load(response)
 
 
 def safe_path(path):

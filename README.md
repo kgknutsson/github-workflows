@@ -14,3 +14,8 @@ A guard workflow scans each push.
 Set repository variable `PUBLIC_REPO_DENYLIST` under **Settings → Secrets and variables → Actions → Variables**.
 Use one term per line. Repo admins can view and edit this variable.
 For local commits, set `DENYLIST_FILE` to a path outside the repository and run `.githooks/pre-commit`.
+The guard loads the list through the GitHub API when possible. Otherwise it uses the masked repository secret `PUBLIC_REPO_DENYLIST`.
+
+When you change the repository variable, refresh the masked secret from a clone of this repository:
+
+`gh secret set PUBLIC_REPO_DENYLIST --body "$(gh variable get PUBLIC_REPO_DENYLIST)"`
