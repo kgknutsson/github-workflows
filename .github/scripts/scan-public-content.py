@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """Scan text files. This file does not store a word list."""
-import base64
-import json
 import os
 import re
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 
 ALLOWED_REPOS = (
     "kgknutsson/github-workflows",
     "kgknutsson/github-actions",
 )
+LOCAL_DENYLIST = ".denylist.local"
 GUID = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-MAX_BYTES = 1_000_000
 
 
 def owner_prefix():
@@ -31,75 +27,23 @@ def redact_allowed(line):
     return redacted
 
 
-def github_json(url, token):
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": "Bearer " + token,
-            "User-Agent": "public-content-guard",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urllib.request.urlopen(request) as response:
-        return json.load(response)
-
-
-def fail_denylist(message):
-    print("::error::" + message, file=sys.stderr)
-    raise SystemExit(1)
-
-
-def load_raw_denylist():
-    path = os.environ.get("DENYLIST_FILE", "")
-    if path and os.path.isfile(path):
-        return open(path, encoding="utf-8").read()
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    token = os.environ.get("GITHUB_TOKEN", "")
-    var_name = os.environ.get("DENYLIST_VARIABLE", "PUBLIC_REPO_DENYLIST")
-    if not repo or not token:
-        fail_denylist(
-            "Cannot load PUBLIC_REPO_DENYLIST: set GITHUB_REPOSITORY and GITHUB_TOKEN in CI, "
-            "or DENYLIST_FILE for local runs."
-        )
-    url = "https://api.github.com/repos/" + repo + "/actions/variables/" + var_name
-    try:
-        payload = github_json(url, token)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        fail_denylist(
-            "Cannot read repository variable "
-            + var_name
-            + " (HTTP "
-            + str(exc.code)
-            + "). Set "
-            + var_name
-            + " under Settings → Actions → Variables. The job needs actions: read permission. Re-run the workflow after you fix it. GitHub response: "
-            + detail
-        )
-    except urllib.error.URLError as exc:
-        fail_denylist(
-            "Cannot read repository variable " + var_name + ": " + str(exc.reason)
-        )
-    except json.JSONDecodeError as exc:
-        fail_denylist(
-            "Cannot parse GitHub API response for " + var_name + ": " + str(exc)
-        )
-    value = payload.get("value") or ""
-    if not value.strip():
-        fail_denylist(
-            "Repository variable "
-            + var_name
-            + " is empty. Set it under Settings → Actions → Variables and re-run the workflow."
-        )
-    return value
+def denylist_path():
+    path = os.environ.get("DENYLIST_FILE", "").strip()
+    if path:
+        return path
+    if os.path.isfile(LOCAL_DENYLIST):
+        return LOCAL_DENYLIST
+    return ""
 
 
 def load_terms():
-    structural_only = os.environ.get("ALLOW_STRUCTURAL_ONLY", "false").lower() == "true"
-    if structural_only:
-        return []
-    raw = load_raw_denylist()
+    path = denylist_path()
+    raw = ""
+    if path:
+        if not os.path.isfile(path):
+            print("::error::The word list file is missing: " + path, file=sys.stderr)
+            raise SystemExit(1)
+        raw = open(path, encoding="utf-8").read()
     terms = [
         line.strip()
         for line in raw.splitlines()
@@ -108,61 +52,26 @@ def load_terms():
     required = os.environ.get("DENYLIST_REQUIRED", "true").lower() == "true"
     if required and not terms:
         print(
-            "::error::The word list is empty. Set the PUBLIC_REPO_DENYLIST repository variable, or DENYLIST_FILE for local runs.",
+            "::error::The word list is empty. Create .denylist.local with one term on each line.",
             file=sys.stderr,
         )
         raise SystemExit(1)
     return terms
 
 
-def safe_path(path):
-    parts = path.split("/")
-    if not parts or any(part in ("", ".", "..") for part in parts):
-        return False
-    return True
-
-
-def download_tree(repo, sha, dest, token):
-    tree = github_json(
-        "https://api.github.com/repos/" + repo + "/git/trees/" + sha + "?recursive=1",
-        token,
-    )
-    if tree.get("truncated"):
-        print("::error::The file tree is truncated.", file=sys.stderr)
-        raise SystemExit(1)
-    os.makedirs(dest, exist_ok=True)
-    for item in tree.get("tree", []):
-        if item.get("type") != "blob":
-            continue
-        path = item.get("path", "")
-        if not safe_path(path):
-            print("::error::The file tree has an unsafe path.", file=sys.stderr)
-            raise SystemExit(1)
-        if item.get("size", 0) > MAX_BYTES:
-            continue
-        blob = github_json(item["url"], token)
-        if blob.get("encoding") != "base64":
-            continue
-        target = os.path.join(dest, *path.split("/"))
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "wb") as handle:
-            handle.write(base64.b64decode(blob["content"]))
+def skip_path(path):
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return name == LOCAL_DENYLIST
 
 
 def iter_working_files(root):
-    scan_dir = os.environ.get("SCAN_DIR", "")
-    if scan_dir:
-        for dirpath, dirnames, filenames in os.walk(scan_dir):
-            dirnames[:] = [name for name in dirnames if name != ".git"]
-            for name in filenames:
-                full = os.path.join(dirpath, name)
-                yield os.path.relpath(full, scan_dir), full, None
-        return
     listed = subprocess.check_output(["git", "ls-files", "-z"], cwd=root)
     for raw_path in listed.split(b"\0"):
         if not raw_path:
             continue
         path = raw_path.decode("utf-8", "surrogateescape")
+        if skip_path(path):
+            continue
         yield path, os.path.join(root, path), None
 
 
@@ -175,6 +84,8 @@ def iter_index_files(root):
         if not raw_path:
             continue
         path = raw_path.decode("utf-8", "surrogateescape")
+        if skip_path(path):
+            continue
         try:
             content = subprocess.check_output(["git", "show", ":" + path], cwd=root)
         except subprocess.CalledProcessError:
@@ -204,20 +115,8 @@ def scan_text(path, text, terms):
 
 
 def main():
-    token = os.environ.get("GITHUB_TOKEN", "")
-    scan_repo = os.environ.get("SCAN_REPO", "")
-    scan_sha = os.environ.get("SCAN_SHA", "")
-    scan_dir = os.environ.get("SCAN_DIR", "")
-    if scan_repo or scan_sha:
-        if not scan_repo or not scan_sha or not token:
-            print("::error::The proposed revision is incomplete.", file=sys.stderr)
-            raise SystemExit(1)
-        dest = scan_dir or os.path.join(os.environ.get("RUNNER_TEMP", "/tmp"), "proposed-files")
-        download_tree(scan_repo, scan_sha, dest, token)
-        os.environ["SCAN_DIR"] = dest
     root = sys.argv[1] if len(sys.argv) > 1 else "."
-    if not os.environ.get("SCAN_DIR"):
-        os.chdir(root)
+    os.chdir(root)
     terms = load_terms()
     failed = False
     use_index = os.environ.get("SCAN_INDEX", "false").lower() == "true"
