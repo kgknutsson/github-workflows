@@ -80,6 +80,7 @@ Pin `@dev` or `@v4` (when tagged) on reusable workflows **and** pass the same re
 ## Related docs
 
 - [azure-app-service-slot-promotion.md](azure-app-service-slot-promotion.md) — promotion contract and examples.
+- [app-readiness-health-checks.md](app-readiness-health-checks.md) — host readiness vs downstream API probes (ecom cv backend learnings).
 
 ## Slack production notify (optional)
 

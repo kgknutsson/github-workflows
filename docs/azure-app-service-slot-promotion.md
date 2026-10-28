@@ -14,7 +14,7 @@ For recovery metadata, cron wrappers, and guard patterns see [slot-swap-guards-a
 | Azure RBAC | Identity can deploy to the staging slot and run `Microsoft.Web/sites/slots/slotsswap/action`. |
 | Terraform | `auto_swap_slot_name` must be **disabled** on the staging slot. AutoSwap drift fails preflight. |
 | Runner | The `runner` input defaults to `ubuntu-latest`. Pass a runner that can reach private health endpoints. |
-| Health | Staging health must pass before ARM swap. Production health runs after swap. Configure `health-check-url` or `health-check-path` / App Service `healthCheckPath`. |
+| Health | Staging health must pass before ARM swap. Production health runs after swap. Configure `health-check-url` or `health-check-path` / App Service `healthCheckPath`. See [app-readiness-health-checks.md](app-readiness-health-checks.md) for what the app should verify (host vs downstream). |
 | Pinning | Pin the reusable workflow ref **and** pass the same ref in `scripts-ref` (for example `dev` or `v4`). |
 | Slot lifecycle | Optional `manage_deploy_slot_lifecycle: true` starts the staging slot before deploy or health checks and stops it after production health passes. |
 
