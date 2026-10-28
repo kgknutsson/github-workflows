@@ -29,7 +29,12 @@ This repo provides:
 
 - **Reusable preflight** — `azure-app-service-slot-swap-recovery-preflight.yml` (metadata + optional production health URL).
 - **Guard script** — `.github/scripts/azure-app-service-slot-swap-guards.sh` (`scheduled-preflight`).
+- **GitHub run correlation** — `.github/scripts/azure-app-service-slot-swap-github-run.sh` (`load_run_metadata`, orphan detection when the Actions run returns HTTP 404).
 - **Caller cron wrapper template** — [docs/examples/recover-slot-swap-cron-wrapper.yml](examples/recover-slot-swap-cron-wrapper.yml).
+
+**Orphan run markers:** Recovery metadata stores `run-<id>-<attempt>`. If that run was deleted, purged, or never existed in the consumer repo, reconciliation must not fail permanently when production health is good. Source `azure-app-service-slot-swap-github-run.sh` (or mirror the logic in your app script), validate the deployment workflow **path** (not the display `run-name`), and clear stale metadata after a successful health check. Reference: `ecom-cv-site-frontend` `slot-swap-recovery.sh` (`reconcile_orphan_run_metadata`).
+
+**v4 promotion without recovery app settings:** `azure-app-service-slot-promotion.yml` uses ARM slot swap and does not write slot-swap recovery state or run-id app settings. Apps on that path avoid this metadata class; keep recovery cron only while legacy deployment workflows still use those markers.
 
 ## Cron ownership (GitHub Actions limitation)
 
