@@ -34,6 +34,8 @@ This repo provides:
 
 **Orphan run markers:** Recovery metadata stores `run-<id>-<attempt>`. If that run was deleted, purged, or never existed in the consumer repo, reconciliation must not fail permanently when production health is good. Source `azure-app-service-slot-swap-github-run.sh` (or mirror the logic in your app script), validate the deployment workflow **path** (not the display `run-name`), and clear stale metadata after a successful health check. Reference: `ecom-cv-site-frontend` `slot-swap-recovery.sh` (`reconcile_orphan_run_metadata`).
 
+**Sourcing `azure-app-service-slot-swap-github-run.sh`:** In the consumer recovery job set `permissions.actions: read`, `API_TOKEN: ${{ github.token }}`, and `GITHUB_REPOSITORY` (default in Actions). Optionally set `SLOT_SWAP_DEPLOYMENT_WORKFLOW_PATH` when the deploy workflow file is not `.github/workflows/deployment.yml`. Pin the same ref in sparse checkout as other reusable workflow `scripts-ref` inputs. Orphan cleanup (`set_healthy`, health probes) stays in the app repo; this script only loads run metadata and sets `SLOT_SWAP_RUN_METADATA_ORPHAN` on HTTP 404.
+
 **v4 promotion without recovery app settings:** `azure-app-service-slot-promotion.yml` uses ARM slot swap and does not write slot-swap recovery state or run-id app settings. Apps on that path avoid this metadata class; keep recovery cron only while legacy deployment workflows still use those markers.
 
 ## Cron ownership (GitHub Actions limitation)
