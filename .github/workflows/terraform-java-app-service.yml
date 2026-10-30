@@ -113,6 +113,7 @@ jobs:
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
+      contents: read
     steps:
       - name: Login to Azure
         uses: azure/login@v3
@@ -170,6 +171,24 @@ jobs:
             echo "::error::manage_deploy_slot_lifecycle requires slot-name to be a non-production deployment slot"
             exit 1
           fi
+      - name: Checkout promotion scripts
+        if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: kgknutsson/github-workflows
+          ref: v4 # internal v4 tag; a commit hash is not required for this dependency
+          path: shared-workflows
+          sparse-checkout: |
+            .github/scripts/azure-app-service-slot-promotion.sh
+          sparse-checkout-cone-mode: false
+      - name: Acquire slot mutation lock
+        id: slot_lock
+        if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
+        env:
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          LOCK_WAIT_SECONDS: "180"
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-acquire
       - name: Start deploy slot before package deploy
         if: env.APPLICATION_CAF_NAME != '' && inputs.manage_deploy_slot_lifecycle && inputs.explicit_slot_swap && inputs.slot-name != 'production'
         env:
@@ -226,77 +245,40 @@ jobs:
       - name: Verify staging slot health
         if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
         env:
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          STAGING_SLOT: ${{ inputs.slot-name }}
           HEALTH_CHECK_PATH: ${{ inputs.health_check_path }}
-          SLOT_NAME: ${{ inputs.slot-name }}
           STAGING_HEALTH_ATTEMPTS: ${{ inputs.staging_health_attempts }}
+          POLL_INTERVAL_SECONDS: "10"
         run: |
-          set -eo pipefail
-          HEALTH_PATH="$HEALTH_CHECK_PATH"
-          HEALTH_PATH="/${HEALTH_PATH#/}"
-          URL="https://${APPLICATION_CAF_NAME}-${SLOT_NAME}.azurewebsites.net${HEALTH_PATH}"
-          ATTEMPTS="$STAGING_HEALTH_ATTEMPTS"
-
-          echo "Waiting for staging slot to become healthy: $URL"
-          for i in $(seq 1 "$ATTEMPTS"); do
-            STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 10 "$URL" || true)
-            if [ "$STATUS" = "200" ]; then
-              echo "Staging health check passed (HTTP $STATUS) on attempt $i/$ATTEMPTS"
-              exit 0
-            fi
-
-            if [ "$i" -lt "$ATTEMPTS" ]; then
-              echo "Attempt $i/$ATTEMPTS: HTTP $STATUS - retrying in 10s..."
-              sleep 10
-            else
-              echo "Attempt $i/$ATTEMPTS: HTTP $STATUS"
-            fi
-          done
-
-          echo "::error::Staging health check failed after $ATTEMPTS attempts - aborting swap"
-          exit 1
-      - name: Swap staging to production
+          export STAGING_HEALTH_MAX_WAIT_SECONDS=$(( STAGING_HEALTH_ATTEMPTS * 10 ))
+          bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh staging-health
+      - name: Promote slot via ARM
+        id: arm_promote
         if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
         env:
-          SLOT_NAME: ${{ inputs.slot-name }}
-        run: |
-          set -eo pipefail
-          az webapp deployment slot swap \
-            --name "$APPLICATION_CAF_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --slot "$SLOT_NAME" \
-            --target-slot production
-          echo "SWAP_COMPLETED=true" >> "$GITHUB_ENV"
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          STAGING_SLOT: ${{ inputs.slot-name }}
+          TARGET_SLOT: production
+          PROMOTION_MAX_WAIT_SECONDS: "900"
+          POLL_INTERVAL_SECONDS: "15"
+          SWAP_REQUEST_TIMEOUT_SECONDS: "60"
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh promote
       - name: Verify production health
+        id: production_health
         if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
         env:
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
           HEALTH_CHECK_PATH: ${{ inputs.health_check_path }}
           PRODUCTION_HEALTH_ATTEMPTS: ${{ inputs.production_health_attempts }}
+          POLL_INTERVAL_SECONDS: "10"
         run: |
-          set -eo pipefail
-          HEALTH_PATH="$HEALTH_CHECK_PATH"
-          HEALTH_PATH="/${HEALTH_PATH#/}"
-          URL="https://${APPLICATION_CAF_NAME}.azurewebsites.net${HEALTH_PATH}"
-          ATTEMPTS="$PRODUCTION_HEALTH_ATTEMPTS"
-
-          echo "Verifying production after slot swap: $URL"
-          for i in $(seq 1 "$ATTEMPTS"); do
-            STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 10 "$URL" || true)
-            if [ "$STATUS" = "200" ]; then
-              echo "Production health check passed (HTTP $STATUS) on attempt $i/$ATTEMPTS"
-              echo "PRODUCTION_HEALTH_PASSED=true" >> "$GITHUB_ENV"
-              exit 0
-            fi
-
-            if [ "$i" -lt "$ATTEMPTS" ]; then
-              echo "Attempt $i/$ATTEMPTS: HTTP $STATUS - retrying in 10s..."
-              sleep 10
-            else
-              echo "Attempt $i/$ATTEMPTS: HTTP $STATUS"
-            fi
-          done
-
-          echo "::error::Production health check failed after $ATTEMPTS attempts"
-          exit 1
+          export PRODUCTION_HEALTH_MAX_WAIT_SECONDS=$(( PRODUCTION_HEALTH_ATTEMPTS * 10 ))
+          bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh production-health
+          echo "PRODUCTION_HEALTH_PASSED=true" >> "$GITHUB_ENV"
       - name: Stop deploy slot after successful promotion
         if: env.APPLICATION_CAF_NAME != '' && inputs.manage_deploy_slot_lifecycle && env.PRODUCTION_HEALTH_PASSED == 'true'
         env:
@@ -336,18 +318,15 @@ jobs:
           done
           echo "::error::Deploy slot '$SLOT_NAME' did not reach Stopped state after the stop request"
           exit 1
-      - name: Roll back failed slot swap
-        if: failure() && env.SWAP_COMPLETED == 'true' && env.PRODUCTION_HEALTH_PASSED != 'true'
+      - name: Roll back slot swap after failed production verification
+        if: failure() && steps.arm_promote.outcome == 'success' && steps.production_health.outcome == 'failure'
         env:
-          SLOT_NAME: ${{ inputs.slot-name }}
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          STAGING_SLOT: ${{ inputs.slot-name }}
+          TARGET_SLOT: production
         run: |
-          set -eo pipefail
-          echo "Rolling back by swapping the staging slot back to production..."
-          az webapp deployment slot swap \
-            --name "$APPLICATION_CAF_NAME" \
-            --resource-group "$RESOURCE_GROUP" \
-            --slot "$SLOT_NAME" \
-            --target-slot production
+          bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh rollback-swap
           echo "ROLLBACK_COMPLETED=true" >> "$GITHUB_ENV"
       - name: Verify rollback health
         if: failure() && env.ROLLBACK_COMPLETED == 'true'
@@ -376,6 +355,12 @@ jobs:
           done
 
           echo "::warning::Rollback health check did not pass - manual verification is required"
+      - name: Release slot mutation lock
+        if: always() && steps.slot_lock.outcome == 'success'
+        env:
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release
       - name: Deploy to Azure App Service
         if: env.APPLICATION_CAF_NAME != '' && inputs.slot-name2 != ''
         uses: azure/webapps-deploy@v3

@@ -23,6 +23,7 @@ jobs:
           curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
           ./actionlint -color \
             .github/workflows/azure-app-service-slot-promotion.yml \
+            .github/workflows/azure-app-service-staging-slot-idle-stop.yml \
             .github/workflows/azure-webapp-zip-deploy.yml \
             .github/workflows/azure-app-service-slot-swap-recovery-preflight.yml \
             .github/workflows/spa-app-service-pr-preview.yml \

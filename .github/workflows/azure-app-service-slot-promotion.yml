@@ -127,11 +127,17 @@ on:
         default: false
     secrets:
       CLIENT_ID:
-        required: true
+        required: false
       TENANT_ID:
-        required: true
+        required: false
       SUBSCRIPTION_ID:
-        required: true
+        required: false
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        required: false
     outputs:
       promotion-client-request-id:
         description: x-ms-client-request-id sent to ARM for activity-log correlation.
@@ -222,9 +228,18 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v3
         with:
-          client-id: ${{ secrets.CLIENT_ID }}
-          tenant-id: ${{ secrets.TENANT_ID }}
-          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID || secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Acquire slot mutation lock
+        id: slot_lock
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          LOCK_WAIT_SECONDS: "180"
+        run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-acquire
 
       - name: Verify Azure AutoSwap is disabled
         shell: bash
@@ -319,8 +334,8 @@ jobs:
           TARGET_SLOT: ${{ inputs.target-slot }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh rollback-swap
 
-      - name: Stop staging slot when lifecycle management is enabled
-        if: always() && inputs.manage_deploy_slot_lifecycle
+      - name: Stop staging slot after a healthy production promotion
+        if: inputs.manage_deploy_slot_lifecycle && steps.arm_promote.outcome == 'success' && steps.production_health.outcome == 'success'
         shell: bash
         env:
           WEBAPP_NAME: ${{ inputs.webapp-name }}
@@ -337,3 +352,11 @@ jobs:
           SMOKE_TEST_MAX_WAIT_SECONDS: ${{ inputs.smoke-test-max-wait-seconds }}
           POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh smoke-test
+
+      - name: Release slot mutation lock
+        if: always() && steps.slot_lock.outcome == 'success'
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+        run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release

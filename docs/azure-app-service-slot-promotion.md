@@ -83,8 +83,12 @@ jobs:
 - **Production health failure after swap**: Runs `rollback-swap` (CLI swap staging back to production) when ARM promote succeeded but production health failed.
 - **Client timeout on ARM POST**: Reconcile via async polling and activity-log correlation only. No blind second swap.
 - **Deadline**: `promotion-max-wait-seconds` caps the whole promotion window. Each HTTP call uses the remaining time.
-- **`manage_deploy_slot_lifecycle`**: Stops the staging slot when the job finishes (`always()`), including failed deploy or health checks.
+- **`manage_deploy_slot_lifecycle`**: Stops the staging slot only after the ARM swap and the production health check both succeed. A failed deploy, a failed health check, or a rollback leaves the staging slot running.
 
-## Migration note
+## Idle stop and recovery
+
+A weekly caller can stop a staging slot that is still running. Use `.github/workflows/azure-app-service-staging-slot-idle-stop.yml`. Keep that job out of the deploy concurrency group, because a shared group cancels a deploy that is waiting. Pass `deploy-workflows`. The stop takes the web app tag `github-actions-slot-lock`, checks those workflows again, and then stops the slot. It releases the tag after the stop. A deploy workflow must take the same lock before it changes the slot.
+
+Recovery is a separate check. `azure-app-service-slot-swap-recovery-preflight.yml` reports whether metadata or production health needs reconciliation. The caller owns the schedule. The preflight does not swap and it does not stop the slot.
 
 This workflow does not switch production callers by itself. Migrate one non-production environment first.
