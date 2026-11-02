@@ -127,9 +127,11 @@ jobs:
           name: terraform-output
       - name: Set environment variables
         run: |
-          echo "APPLICATION_CAF_NAME=$(cat terraform-output.json | jq -r '.application_caf_name.value | select(. != null)')" >> $GITHUB_ENV
-          echo "FUNCTION_CAF_NAME=$(cat terraform-output.json | jq -r '.function_caf_name.value | select(. != null)')" >> $GITHUB_ENV
-          echo "RESOURCE_GROUP=$(cat terraform-output.json | jq -r '.resource_group_name.value | select(. != null)')" >> $GITHUB_ENV
+          {
+            echo "APPLICATION_CAF_NAME=$(jq -r '.application_caf_name.value | select(. != null)' terraform-output.json)"
+            echo "FUNCTION_CAF_NAME=$(jq -r '.function_caf_name.value | select(. != null)' terraform-output.json)"
+            echo "RESOURCE_GROUP=$(jq -r '.resource_group_name.value | select(. != null)' terraform-output.json)"
+          } >> "$GITHUB_ENV"
       - name: Validate explicit slot swap inputs
         if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap
         env:
@@ -215,6 +217,7 @@ jobs:
             exit 1
           fi
           for attempt in $(seq 1 12); do
+            echo "Slot state check ${attempt}"
             if ! slot_state=$(az webapp show --name "$APPLICATION_CAF_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query state -o tsv 2>"$error_file"); then
               echo "::error::Failed to query slot '$SLOT_NAME' state after the start request"
               cat "$error_file"
@@ -305,6 +308,7 @@ jobs:
             exit 1
           fi
           for attempt in $(seq 1 12); do
+            echo "Slot state check ${attempt}"
             if ! slot_state=$(az webapp show --name "$APPLICATION_CAF_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query state -o tsv 2>"$error_file"); then
               echo "::error::Failed to query slot '$SLOT_NAME' state after the stop request"
               cat "$error_file"
@@ -398,7 +402,7 @@ jobs:
         with:
           name: terraform-output
       - name: Set environment variables
-        run: echo "FLYWAY_URL=$(cat terraform-output.json | jq -r .database_jdbc_string.value)" >> $GITHUB_ENV
+        run: echo "FLYWAY_URL=$(jq -r .database_jdbc_string.value terraform-output.json)" >> "$GITHUB_ENV"
       - name: Run flyway migrate
         uses: docker://flyway/flyway:9.19
         env:
