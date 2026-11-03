@@ -57,6 +57,11 @@ on:
         type: string
         required: false
         default: ubuntu-latest
+      runner-group:
+        description: Optional runner group. When set, the job runs in this group with the runner label.
+        type: string
+        required: false
+        default: ""
     secrets:
       CLIENT_ID:
         required: true
@@ -68,7 +73,7 @@ on:
 jobs:
   deploy:
     name: Deploy ${{ inputs.webapp-name }}
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner-group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner-group, inputs.runner)) || inputs.runner }}
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
