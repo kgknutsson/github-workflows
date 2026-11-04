@@ -132,11 +132,11 @@ on:
         default: false
     secrets:
       CLIENT_ID:
-        required: true
+        required: false
       TENANT_ID:
-        required: true
+        required: false
       SUBSCRIPTION_ID:
-        required: true
+        required: false
     outputs:
       promotion-client-request-id:
         description: x-ms-client-request-id sent to ARM for activity-log correlation.
@@ -148,7 +148,7 @@ on:
 jobs:
   promote:
     name: Promote ${{ inputs.webapp-name }}
-    runs-on: ${{ inputs.runner-group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner-group, inputs.runner)) || inputs.runner }}
+    runs-on: ${{ inputs.runner-group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"{2}', inputs.runner-group, inputs.runner, '}')) || inputs.runner }}
     environment: ${{ inputs.environment }}
     concurrency:
       group: app-service-promotion-${{ inputs.resource-group }}-${{ inputs.webapp-name }}

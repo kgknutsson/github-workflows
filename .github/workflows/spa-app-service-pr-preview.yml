@@ -233,7 +233,7 @@ jobs:
   deploy-to-slot:
     name: Build and deploy preview
     needs: provision-slot
-    runs-on: ${{ inputs.runner-group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner-group, inputs.runner)) || inputs.runner }}
+    runs-on: ${{ inputs.runner-group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"{2}', inputs.runner-group, inputs.runner, '}')) || inputs.runner }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 30
     concurrency:
