@@ -2,6 +2,8 @@
 
 Use `azure-webapp-zip-deploy.yml` for **direct** zip deploy to a slot (typically `production` on dev).
 
+The deploy step runs `az webapp deploy --type zip`.
+
 Pair it with `azure-app-service-slot-promotion.yml` for production releases:
 
 1. Build and upload a zip artifact in the caller.
