@@ -34,13 +34,10 @@ jobs:
 
 `runner` is the runner label. The default is `ubuntu-latest`.
 
-`runner-group` is optional. When you set it, the deploy job runs in that group and uses the `runner` label.
-
-A private endpoint needs both inputs. Set `runner-group` to the group name and `runner` to a label in that group. Leave `runner-group` empty to keep label-only selection.
+A private endpoint needs a label for a runner that can reach the app.
 
 ```yaml
     runner: self-hosted-linux
-    runner-group: private-runners
 ```
 
-The build job stays in the caller. It can use `ubuntu-latest`. Only the deploy job uses these inputs.
+The build job stays in the caller. It can use `ubuntu-latest`. Only the deploy job uses `runner`.

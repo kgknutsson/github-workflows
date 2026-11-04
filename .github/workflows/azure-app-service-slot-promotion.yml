@@ -118,11 +118,6 @@ on:
         type: string
         required: false
         default: ubuntu-latest
-      runner-group:
-        description: Optional runner group. When set, the job runs in this group with the runner label.
-        type: string
-        required: false
-        default: ""
       manage_deploy_slot_lifecycle:
         description: >-
           When true, start the staging slot before deploy or health checks and stop it
@@ -148,7 +143,7 @@ on:
 jobs:
   promote:
     name: Promote ${{ inputs.webapp-name }}
-    runs-on: ${{ inputs.runner-group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"{2}', inputs.runner-group, inputs.runner, '}')) || inputs.runner }}
+    runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     concurrency:
       group: app-service-promotion-${{ inputs.resource-group }}-${{ inputs.webapp-name }}
