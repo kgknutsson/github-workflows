@@ -64,16 +64,16 @@ on:
         default: ""
     secrets:
       CLIENT_ID:
-        required: true
+        required: false
       TENANT_ID:
-        required: true
+        required: false
       SUBSCRIPTION_ID:
-        required: true
+        required: false
 
 jobs:
   deploy:
     name: Deploy ${{ inputs.webapp-name }}
-    runs-on: ${{ inputs.runner-group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner-group, inputs.runner)) || inputs.runner }}
+    runs-on: ${{ inputs.runner-group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"{2}', inputs.runner-group, inputs.runner, '}')) || inputs.runner }}
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
