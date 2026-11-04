@@ -71,8 +71,6 @@ deploy-webapp-apps:
     caller_prepare_script: .github/scripts/pr-preview-spa-slot-prepare.sh
     caller_prepare_env_json: ${{ format('{{"APP_SLUG":"{0}","PR_NUMBER":"{1}"}}', matrix.name, github.event.pull_request.number) }}
     runner: ubuntu-latest
-    # Private slot: set runner to the label and runner-group to the group.
-    # runner-group: private-runners
     scripts_ref: dev
   secrets:
     AZURE_CLIENT_ID: ${{ secrets.CLIENT_ID }}
