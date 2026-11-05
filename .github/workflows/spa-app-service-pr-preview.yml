@@ -154,7 +154,10 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 15
     concurrency:
-      group: spa-preview-slot-${{ inputs.webapp_name }}-${{ inputs.slot_name }}
+      group: >-
+        ${{ inputs.plan_memory_percent_threshold != ''
+            && format('spa-preview-plan-gate-{0}-{1}', inputs.app_service_plan_name, inputs.app_service_plan_resource_group)
+            || format('spa-preview-slot-{0}-{1}', inputs.webapp_name, inputs.slot_name) }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -184,9 +187,12 @@ jobs:
       - name: Validate plan memory gate inputs
         if: inputs.plan_memory_percent_threshold != ''
         shell: bash
+        env:
+          PLAN_NAME: ${{ inputs.app_service_plan_name }}
+          PLAN_RESOURCE_GROUP: ${{ inputs.app_service_plan_resource_group }}
         run: |
           set -euo pipefail
-          if [ -z "${{ inputs.app_service_plan_name }}" ] || [ -z "${{ inputs.app_service_plan_resource_group }}" ]; then
+          if [ -z "$PLAN_NAME" ] || [ -z "$PLAN_RESOURCE_GROUP" ]; then
             echo "::error::plan_memory_percent_threshold requires app_service_plan_name and app_service_plan_resource_group."
             exit 1
           fi
