@@ -1,0 +1,66 @@
+# Callable: list Stopped pr-<number> slots on one web app (for cross-repo nightly notices).
+name: SPA App Service PR preview discover stopped slots
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment for Azure OIDC
+        type: string
+        required: true
+      webapp_name:
+        type: string
+        required: true
+      resource_group:
+        type: string
+        required: true
+      scripts_ref:
+        type: string
+        required: false
+        default: dev
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+    outputs:
+      pr_numbers:
+        description: Space-separated PR numbers with Stopped pr-* slots
+        value: ${{ jobs.discover.outputs.pr_numbers }}
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      pr_numbers: ${{ steps.discover.outputs.pr_numbers }}
+    steps:
+      - name: Login to Azure
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Checkout workflow helper scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          repository: kgknutsson/github-workflows
+          ref: ${{ inputs.scripts_ref }}
+          path: reusable-workflows
+          sparse-checkout: |
+            .github/scripts/spa-app-service-pr-preview-list-stopped-pr-slots.sh
+          sparse-checkout-cone-mode: false
+
+      - name: List Stopped pr-* slots
+        id: discover
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+        run: bash reusable-workflows/.github/scripts/spa-app-service-pr-preview-list-stopped-pr-slots.sh

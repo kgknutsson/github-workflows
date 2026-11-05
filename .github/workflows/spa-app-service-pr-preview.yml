@@ -103,6 +103,26 @@ on:
         type: boolean
         required: false
         default: false
+      app_service_plan_name:
+        description: App Service plan name for optional shared-plan memory gate
+        type: string
+        required: false
+        default: ""
+      app_service_plan_resource_group:
+        description: Resource group of the App Service plan for the memory gate
+        type: string
+        required: false
+        default: ""
+      plan_memory_percent_threshold:
+        description: Fail when plan MemoryPercentage exceeds this value. Empty skips the gate
+        type: string
+        required: false
+        default: ""
+      slot_always_on:
+        description: When false, set Always On off on the preview slot to reduce idle memory use
+        type: boolean
+        required: false
+        default: false
     secrets:
       AZURE_CLIENT_ID:
         required: true
@@ -149,6 +169,26 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Checkout workflow helper scripts
+        if: inputs.plan_memory_percent_threshold != '' || inputs.slot_always_on == false
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          repository: kgknutsson/github-workflows
+          ref: ${{ inputs.scripts_ref }}
+          path: reusable-workflows
+          sparse-checkout: |
+            .github/scripts/spa-app-service-pr-preview-plan-memory-gate.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Gate on shared App Service plan memory
+        if: inputs.plan_memory_percent_threshold != '' && inputs.app_service_plan_name != '' && inputs.app_service_plan_resource_group != ''
+        shell: bash
+        env:
+          PLAN_NAME: ${{ inputs.app_service_plan_name }}
+          PLAN_RESOURCE_GROUP: ${{ inputs.app_service_plan_resource_group }}
+          THRESHOLD: ${{ inputs.plan_memory_percent_threshold }}
+        run: bash reusable-workflows/.github/scripts/spa-app-service-pr-preview-plan-memory-gate.sh
 
       - name: Create or reuse the preview slot
         id: provision
@@ -214,6 +254,15 @@ jobs:
               --yes >/dev/null; then
               echo "::warning::Easy Auth was not updated on ${SLOT_NAME}."
             fi
+          fi
+
+          if [ "${{ inputs.slot_always_on }}" != "true" ]; then
+            echo "Setting Always On off on preview slot ${SLOT_NAME}..."
+            az webapp config set \
+              --name "$WEBAPP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --slot "$SLOT_NAME" \
+              --always-on false >/dev/null
           fi
 
           host="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query defaultHostName -o tsv)"
