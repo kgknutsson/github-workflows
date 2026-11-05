@@ -10,17 +10,22 @@ if ! az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" >/d
   exit 0
 fi
 
-mapfile -t slots < <(az webapp deployment slot list \
+slots_tsv="$(az webapp deployment slot list \
   --name "$WEBAPP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
-  --query "[?starts_with(name, 'pr-')].name" -o tsv 2>/dev/null || true)
+  --query "[?starts_with(name, 'pr-')].name" -o tsv)"
+
+mapfile -t slots <<< "$slots_tsv"
+if [ "${#slots[@]}" -eq 1 ] && [ -z "${slots[0]:-}" ]; then
+  slots=()
+fi
 
 pr_numbers=()
 for slot in "${slots[@]}"; do
   if ! printf '%s' "$slot" | grep -Eq '^pr-[0-9]+$'; then
     continue
   fi
-  state="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$slot" --query state -o tsv 2>/dev/null || echo "")"
+  state="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$slot" --query state -o tsv)"
   if [ "$state" = "Stopped" ]; then
     pr_numbers+=("${slot#pr-}")
   fi

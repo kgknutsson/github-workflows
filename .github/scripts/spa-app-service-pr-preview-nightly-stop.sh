@@ -5,9 +5,10 @@ set -euo pipefail
 : "${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 : "${WEBAPP_NAMES_JSON:?WEBAPP_NAMES_JSON is required}"
 
-mapfile -t webapps < <(python3 - <<'PY' "$WEBAPP_NAMES_JSON"
+webapps_raw="$(python3 - "$WEBAPP_NAMES_JSON" <<'PY'
 import json
 import sys
+
 data = json.loads(sys.argv[1])
 if not isinstance(data, list) or not data:
     raise SystemExit("WEBAPP_NAMES_JSON must be a non-empty JSON array")
@@ -16,10 +17,11 @@ for name in data:
         raise SystemExit("each web app name must be a non-empty string")
     print(name)
 PY
-)
+)"
+
+mapfile -t webapps <<< "$webapps_raw"
 
 stopped_prs=()
-stopped_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
 for webapp in "${webapps[@]}"; do
   if ! az webapp show --name "$webapp" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
@@ -27,18 +29,23 @@ for webapp in "${webapps[@]}"; do
     continue
   fi
 
-  mapfile -t slots < <(az webapp deployment slot list \
+  slots_tsv="$(az webapp deployment slot list \
     --name "$webapp" \
     --resource-group "$RESOURCE_GROUP" \
-    --query "[?starts_with(name, 'pr-')].name" -o tsv 2>/dev/null || true)
+    --query "[?starts_with(name, 'pr-')].name" -o tsv)"
+
+  mapfile -t slots <<< "$slots_tsv"
+  if [ "${#slots[@]}" -eq 1 ] && [ -z "${slots[0]:-}" ]; then
+    slots=()
+  fi
 
   for slot in "${slots[@]}"; do
     if ! printf '%s' "$slot" | grep -Eq '^pr-[0-9]+$'; then
       continue
     fi
-    state="$(az webapp show --name "$webapp" --resource-group "$RESOURCE_GROUP" --slot "$slot" --query state -o tsv 2>/dev/null || echo "")"
+    state="$(az webapp show --name "$webapp" --resource-group "$RESOURCE_GROUP" --slot "$slot" --query state -o tsv)"
     if [ "$state" != "Running" ]; then
-      echo "${webapp}/${slot} state=${state:-unknown}; skip stop."
+      echo "${webapp}/${slot} state=${state}; skip stop."
       continue
     fi
     echo "Stopping ${webapp}/${slot}..."
@@ -48,6 +55,7 @@ for webapp in "${webapps[@]}"; do
   done
 done
 
+stopped_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 unique_prs="$(printf '%s\n' "${stopped_prs[@]}" | sort -un | tr '\n' ' ' | xargs || true)"
 {
   echo "stopped_pr_numbers=${unique_prs}"

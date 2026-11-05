@@ -171,7 +171,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Checkout workflow helper scripts
-        if: inputs.plan_memory_percent_threshold != '' || inputs.slot_always_on == false
+        if: inputs.plan_memory_percent_threshold != '' || inputs.slot_always_on != true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
         with:
           repository: kgknutsson/github-workflows
@@ -181,8 +181,18 @@ jobs:
             .github/scripts/spa-app-service-pr-preview-plan-memory-gate.sh
           sparse-checkout-cone-mode: false
 
+      - name: Validate plan memory gate inputs
+        if: inputs.plan_memory_percent_threshold != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${{ inputs.app_service_plan_name }}" ] || [ -z "${{ inputs.app_service_plan_resource_group }}" ]; then
+            echo "::error::plan_memory_percent_threshold requires app_service_plan_name and app_service_plan_resource_group."
+            exit 1
+          fi
+
       - name: Gate on shared App Service plan memory
-        if: inputs.plan_memory_percent_threshold != '' && inputs.app_service_plan_name != '' && inputs.app_service_plan_resource_group != ''
+        if: inputs.plan_memory_percent_threshold != ''
         shell: bash
         env:
           PLAN_NAME: ${{ inputs.app_service_plan_name }}

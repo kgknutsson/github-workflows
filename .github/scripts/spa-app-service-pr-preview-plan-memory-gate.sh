@@ -11,6 +11,11 @@ if ! printf '%s' "$THRESHOLD" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
   exit 1
 fi
 
+if awk -v limit="$THRESHOLD" 'BEGIN { exit (limit + 0 < 0 || limit + 0 > 100) ? 0 : 1 }'; then
+  echo "::error::THRESHOLD must be between 0 and 100."
+  exit 1
+fi
+
 plan_id="$(az appservice plan show --name "$PLAN_NAME" --resource-group "$PLAN_RESOURCE_GROUP" --query id -o tsv)"
 if [ -z "$plan_id" ]; then
   echo "::error::App Service plan ${PLAN_NAME} was not found in ${PLAN_RESOURCE_GROUP}."
@@ -18,20 +23,41 @@ if [ -z "$plan_id" ]; then
 fi
 
 end="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-start="$(date -u -d '15 minutes ago' +"%Y-%m-%dT%H:%M:%SZ")"
+start="$(date -u -d '20 minutes ago' +"%Y-%m-%dT%H:%M:%SZ")"
 
-avg="$(az monitor metrics list \
+metrics_json="$(mktemp)"
+trap 'rm -f "$metrics_json"' EXIT
+az monitor metrics list \
   --resource "$plan_id" \
   --metric MemoryPercentage \
   --aggregation Average \
-  --interval PT1M \
+  --interval PT15M \
   --start-time "$start" \
   --end-time "$end" \
-  --query "value[0].timeseries[0].data | [?average!=null] | [-1].average" \
-  -o tsv 2>/dev/null || true)"
+  -o json >"$metrics_json"
 
-if [ -z "$avg" ] || [ "$avg" = "None" ]; then
-  echo "::warning::Plan memory metric was unavailable; skipping memory gate."
+avg="$(python3 - "$metrics_json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+points = (
+    payload.get("value", [{}])[0]
+    .get("timeseries", [{}])[0]
+    .get("data", [])
+)
+values = [point["average"] for point in points if point.get("average") is not None]
+if not values:
+    print("")
+    raise SystemExit(0)
+print(f"{sum(values) / len(values):.4f}")
+PY
+)"
+
+if [ -z "$avg" ]; then
+  echo "::warning::Plan memory metric returned no samples; skipping memory gate."
   exit 0
 fi
 
