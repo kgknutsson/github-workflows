@@ -67,8 +67,12 @@ jobs:
                   pull_number: number,
                 });
               } catch (error) {
-                core.info(`PR #${number} not found in ${context.repo.owner}/${context.repo.repo}; skip.`);
-                continue;
+                const status = error?.status;
+                if (status === 404) {
+                  core.info(`PR #${number} not found in ${context.repo.owner}/${context.repo.repo}; skip.`);
+                  continue;
+                }
+                throw error;
               }
               if (pr.data.state !== 'open') {
                 core.info(`PR #${number} is not open; skip.`);

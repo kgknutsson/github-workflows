@@ -248,6 +248,14 @@ jobs:
             slot_created=true
           else
             echo "Slot ${SLOT_NAME} already exists; reusing."
+            slot_state="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --slot "$SLOT_NAME" --query state -o tsv 2>/dev/null || echo "")"
+            if [ "$slot_state" = "Stopped" ]; then
+              echo "Starting stopped slot ${SLOT_NAME} before deploy..."
+              az webapp start \
+                --name "$WEBAPP_NAME" \
+                --resource-group "$RESOURCE_GROUP" \
+                --slot "$SLOT_NAME"
+            fi
           fi
 
           az webapp deployment slot auto-swap \
