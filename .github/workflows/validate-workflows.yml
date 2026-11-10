@@ -49,3 +49,6 @@ jobs:
           bash -n .github/scripts/spa-app-service-pr-preview-plan-memory-gate.sh
           bash -n .github/scripts/spa-app-service-pr-preview-nightly-stop.sh
           bash -n .github/scripts/spa-app-service-pr-preview-list-stopped-pr-slots.sh
+
+      - name: Verify slot lifecycle commands exit 0
+        run: bash .github/scripts/test-azure-app-service-slot-lifecycle.sh
