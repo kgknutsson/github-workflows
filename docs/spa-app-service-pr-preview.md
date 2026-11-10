@@ -7,12 +7,15 @@ Three callable workflows. The caller repository owns `on:`, path filters, and th
 | `spa-app-service-pr-preview.yml` | Provision slot, optional caller prepare script, build, SCM wait, zip-deploy retries, HTTP verify |
 | `spa-app-service-pr-preview-cleanup.yml` | Delete one preview slot and the preview comment |
 | `spa-app-service-pr-preview-orphan-cleanup.yml` | Delete `pr-*` slots whose pull request is not open |
+| `spa-app-service-pr-preview-nightly-stop.yml` | Stop **Running** `pr-*` slots on a shared dev plan (caller schedule) |
+| `spa-app-service-pr-preview-shutoff-notice.yml` | Append nightly shutoff notice to existing preview PR comments |
+| `spa-app-service-pr-preview-discover-stopped.yml` | List **Stopped** `pr-*` slots on one web app (secondary repos) |
 
 ## Deploy job split
 
 `spa-app-service-pr-preview.yml` uses two jobs:
 
-1. **provision-slot** — create the slot when missing, disable auto-swap, optional public network
+1. **provision-slot** — optional plan memory gate, create the slot when missing, disable auto-swap, optional public network, set preview **Always On** off by default
 2. **deploy-to-slot** — checkout caller repo, optional caller prepare script, SCM wait (when the slot was new), build, zip-deploy with retries, HTTP verify, failure summary
 
 ## Hardening
@@ -23,6 +26,8 @@ Three callable workflows. The caller repository owns `on:`, path filters, and th
 | Zip deploy | Retries transient Kudu 503 errors with backoff |
 | Verify | Probes `health_path`; optional Easy Auth redirect acceptance |
 | Failure summary | Writes a step summary with category: `platform_transient`, `platform_config`, `build`, `app_runtime`, or `workflow` |
+| Plan memory gate | When `plan_memory_percent_threshold` and plan name/RG are set, fail before slot work if plan memory is too high |
+| Preview Always On | Default `slot_always_on: false` turns **Always On** off on the slot after create/reuse |
 
 Call the workflow with `@dev` until the commit is on `dev`. After merge, pin a commit SHA. Tag `v4` does not move with every pull request.
 
@@ -68,6 +73,10 @@ deploy-webapp-apps:
     output_directory: dist/apps/${{ matrix.name }}
     health_path: /health
     accept_auth_redirect: true
+    app_service_plan_name: plan-example-frontend-dev
+    app_service_plan_resource_group: rg-example-frontend-dev
+    plan_memory_percent_threshold: "75"
+    slot_always_on: false
     caller_prepare_script: .github/scripts/pr-preview-spa-slot-prepare.sh
     caller_prepare_env_json: ${{ format('{{"APP_SLUG":"{0}","PR_NUMBER":"{1}"}}', matrix.name, github.event.pull_request.number) }}
     runner: ubuntu-latest
@@ -80,3 +89,12 @@ deploy-webapp-apps:
 ```
 
 The caller still owns the pull request comment job. Use `spa-app-service-pr-preview-cleanup.yml` and `spa-app-service-pr-preview-orphan-cleanup.yml` for slot teardown. Optional `caller_pre_delete_script` runs before slot delete (for example private SCM cleanup).
+
+## Nightly shutoff (shared dev plan)
+
+Schedule a thin caller job pair in each repository that deploys previews:
+
+1. `spa-app-service-pr-preview-nightly-stop.yml` — pass a JSON array of web app names on the shared plan (monorepo: all five SPA dev apps; single-app repos: one name).
+2. `spa-app-service-pr-preview-shutoff-notice.yml` — pass `stopped_pr_numbers` from step 1 and `shutoff_at_utc`.
+
+Repositories that share a web app but do not run step 1 for all apps may schedule `spa-app-service-pr-preview-discover-stopped.yml` later (for example 02:15 UTC) and pass discovered PR numbers to the notice workflow.

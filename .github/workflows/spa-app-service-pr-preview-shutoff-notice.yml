@@ -1,0 +1,108 @@
+# Callable: append nightly shutoff notice to open PR preview comments in the caller repo.
+name: SPA App Service PR preview shutoff notice
+
+on:
+  workflow_call:
+    inputs:
+      pr_numbers:
+        description: Space-separated pull request numbers to notify (empty skips)
+        type: string
+        required: false
+        default: ""
+      comment_marker:
+        description: HTML comment marker that identifies the preview comment
+        type: string
+        required: false
+        default: "<!-- pr-preview-webapp -->"
+      shutoff_at_utc:
+        description: UTC timestamp shown in the notice
+        type: string
+        required: true
+      notice_heading:
+        description: Short heading for the shutoff notice block
+        type: string
+        required: false
+        default: "Nightly preview shutoff"
+
+jobs:
+  notify:
+    name: Update pull request preview comments
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Post shutoff notice on open pull requests
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # tag: v7.0.1
+        env:
+          PR_NUMBERS: ${{ inputs.pr_numbers }}
+          MARKER: ${{ inputs.comment_marker }}
+          SHUTOFF_AT: ${{ inputs.shutoff_at_utc }}
+          NOTICE_HEADING: ${{ inputs.notice_heading }}
+        with:
+          script: |
+            const marker = process.env.MARKER || '<!-- pr-preview-webapp -->';
+            const shutoffAt = process.env.SHUTOFF_AT || new Date().toISOString();
+            const heading = process.env.NOTICE_HEADING || 'Nightly preview shutoff';
+            const raw = (process.env.PR_NUMBERS || '').trim();
+            if (!raw) {
+              core.info('No PR numbers to notify.');
+              return;
+            }
+            const numbers = [...new Set(raw.split(/\s+/).map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n)))];
+            const noticeBlock = [
+              '',
+              `> **${heading}** (${shutoffAt} UTC): Web App \`pr-*\` preview slots on the shared dev plan were **stopped** to free memory.`,
+              '> Push to this pull request or run the **PR Preview** workflow to start previews again during the day.',
+            ].join('\n');
+            const shutoffMarker = '<!-- pr-preview-webapp-shutoff -->';
+
+            for (const number of numbers) {
+              let pr;
+              try {
+                pr = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: number,
+                });
+              } catch (error) {
+                const status = error?.status;
+                if (status === 404) {
+                  core.info(`PR #${number} not found in ${context.repo.owner}/${context.repo.repo}; skip.`);
+                  continue;
+                }
+                throw error;
+              }
+              if (pr.data.state !== 'open') {
+                core.info(`PR #${number} is not open; skip.`);
+                continue;
+              }
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                per_page: 100,
+              });
+              const existing = comments.find((c) => (c.body || '').includes(marker));
+              if (!existing) {
+                core.info(`PR #${number} has no preview comment; skip.`);
+                continue;
+              }
+
+              let body = existing.body || '';
+              const shutoffIndex = body.indexOf(shutoffMarker);
+              if (shutoffIndex >= 0) {
+                body = body.slice(0, shutoffIndex).trimEnd();
+              }
+              body = `${body}${noticeBlock}\n${shutoffMarker}\n`;
+
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`Updated shutoff notice on PR #${number}.`);
+            }

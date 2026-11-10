@@ -184,12 +184,18 @@ cmd_smoke_test() {
   wait_for_http "$SMOKE_TEST_URL" "$max_wait" "$poll" "Smoke test"
 }
 
+remove_temp_file() {
+  local path="${1:-}"
+  if [[ -n "$path" ]]; then
+    rm -f -- "$path"
+  fi
+}
+
 wait_for_slot_state() {
   local desired_state="$1"
   local label="$2"
   local attempt slot_state error_file
   error_file="$(mktemp)"
-  trap 'rm -f "$error_file"' RETURN
 
   for attempt in $(seq 1 12); do
     if ! slot_state="$(az webapp show \
@@ -200,16 +206,19 @@ wait_for_slot_state() {
       --output tsv 2>"$error_file")"; then
       echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}' (attempt ${attempt})"
       cat "$error_file"
+      remove_temp_file "$error_file"
       return 1
     fi
     if [[ "$slot_state" == "$desired_state" ]]; then
       echo "${label}: slot '${STAGING_SLOT}' is ${desired_state}"
+      remove_temp_file "$error_file"
       return 0
     fi
     sleep 10
   done
 
   echo "::error::Slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}' did not reach ${desired_state} state in time (last: ${slot_state})"
+  remove_temp_file "$error_file"
   return 1
 }
 
@@ -219,7 +228,6 @@ cmd_slot_start() {
   STAGING_SLOT="${STAGING_SLOT:-staging}"
   local slot_state error_file
   error_file="$(mktemp)"
-  trap 'rm -f "$error_file"' RETURN
 
   if ! slot_state="$(az webapp show \
     --name "$WEBAPP_NAME" \
@@ -229,10 +237,12 @@ cmd_slot_start() {
     --output tsv 2>"$error_file")"; then
     echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}'"
     cat "$error_file"
+    remove_temp_file "$error_file"
     exit 1
   fi
   if [[ "$slot_state" == "Running" ]]; then
     echo "Deploy slot '${STAGING_SLOT}' is already Running"
+    remove_temp_file "$error_file"
     exit 0
   fi
 
@@ -243,8 +253,10 @@ cmd_slot_start() {
     --slot "$STAGING_SLOT" 2>"$error_file"; then
     echo "::error::Failed to start slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}'"
     cat "$error_file"
+    remove_temp_file "$error_file"
     exit 1
   fi
+  remove_temp_file "$error_file"
   wait_for_slot_state "Running" "Start deploy slot"
 }
 
@@ -254,7 +266,6 @@ cmd_slot_stop() {
   STAGING_SLOT="${STAGING_SLOT:-staging}"
   local slot_state error_file
   error_file="$(mktemp)"
-  trap 'rm -f "$error_file"' RETURN
 
   if ! slot_state="$(az webapp show \
     --name "$WEBAPP_NAME" \
@@ -264,10 +275,12 @@ cmd_slot_stop() {
     --output tsv 2>"$error_file")"; then
     echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}'"
     cat "$error_file"
+    remove_temp_file "$error_file"
     exit 1
   fi
   if [[ "$slot_state" == "Stopped" ]]; then
     echo "Deploy slot '${STAGING_SLOT}' is already Stopped"
+    remove_temp_file "$error_file"
     exit 0
   fi
 
@@ -278,8 +291,10 @@ cmd_slot_stop() {
     --slot "$STAGING_SLOT" 2>"$error_file"; then
     echo "::error::Failed to stop slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}'"
     cat "$error_file"
+    remove_temp_file "$error_file"
     exit 1
   fi
+  remove_temp_file "$error_file"
   wait_for_slot_state "Stopped" "Stop deploy slot"
 }
 

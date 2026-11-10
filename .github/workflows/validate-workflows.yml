@@ -29,7 +29,10 @@ jobs:
             .github/workflows/azure-app-service-slot-swap-recovery-preflight.yml \
             .github/workflows/spa-app-service-pr-preview.yml \
             .github/workflows/spa-app-service-pr-preview-cleanup.yml \
-            .github/workflows/spa-app-service-pr-preview-orphan-cleanup.yml
+            .github/workflows/spa-app-service-pr-preview-orphan-cleanup.yml \
+            .github/workflows/spa-app-service-pr-preview-nightly-stop.yml \
+            .github/workflows/spa-app-service-pr-preview-shutoff-notice.yml \
+            .github/workflows/spa-app-service-pr-preview-discover-stopped.yml
 
   promotion-script-shellcheck:
     runs-on: ubuntu-latest
@@ -39,8 +42,15 @@ jobs:
         run: |
           bash -n .github/scripts/azure-app-service-slot-promotion.sh
           bash -n .github/scripts/azure-app-service-slot-swap-guards.sh
+          bash -n .github/scripts/azure-app-service-slot-swap-github-run.sh
           bash -n .github/scripts/spa-app-service-wait-for-scm.sh
           bash -n .github/scripts/spa-app-service-zip-deploy-retry.sh
           bash -n .github/scripts/spa-app-service-verify-slot-http.sh
           bash -n .github/scripts/spa-app-service-write-failure-summary.sh
           bash -n .github/scripts/spa-app-service-run-caller-script.sh
+          bash -n .github/scripts/spa-app-service-pr-preview-plan-memory-gate.sh
+          bash -n .github/scripts/spa-app-service-pr-preview-nightly-stop.sh
+          bash -n .github/scripts/spa-app-service-pr-preview-list-stopped-pr-slots.sh
+
+      - name: Verify slot lifecycle commands exit 0
+        run: bash .github/scripts/test-azure-app-service-slot-lifecycle.sh

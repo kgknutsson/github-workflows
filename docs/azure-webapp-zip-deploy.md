@@ -2,6 +2,8 @@
 
 Use `azure-webapp-zip-deploy.yml` for **direct** zip deploy to a slot (typically `production` on dev).
 
+The deploy step runs `az webapp deploy --type zip`.
+
 Pair it with `azure-app-service-slot-promotion.yml` for production releases:
 
 1. Build and upload a zip artifact in the caller.
@@ -29,3 +31,15 @@ jobs:
       scripts-ref: v4
     secrets: inherit
 ```
+
+## Runner
+
+`runner` is the runner label. The default is `ubuntu-latest`.
+
+A private endpoint needs a label for a runner that can reach the app.
+
+```yaml
+    runner: self-hosted-linux
+```
+
+The build job stays in the caller. It can use `ubuntu-latest`. Only the deploy job uses `runner`.
