@@ -43,6 +43,69 @@ cmd_autoswap_check() {
   echo "Verified auto-swap is disabled on ${WEBAPP_NAME}/${staging_slot}."
 }
 
+read_slot_app_setting() {
+  local slot="$1"
+  local name="$2"
+  local value
+  if ! value="$(az webapp config appsettings list \
+    --name "$WEBAPP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --slot "$slot" \
+    --query "[?name=='${name}'].value | [0]" \
+    --output tsv)"; then
+    echo "::error::Failed to read App Service setting '${name}' on slot '${slot}'." >&2
+    return 1
+  fi
+  normalize_setting "$value"
+}
+
+require_slot_app_setting() {
+  local slot="$1"
+  local name="$2"
+  local expected="$3"
+  local current shown
+  if ! current="$(read_slot_app_setting "$slot" "$name")"; then
+    exit 1
+  fi
+  if [[ "$current" != "$expected" ]]; then
+    shown="${current:-unset}"
+    echo "::error::Slot ${slot} ${name} is '${shown}'. Apply Terraform so it is ${expected}."
+    exit 1
+  fi
+}
+
+cmd_warmup_settings_check() {
+  require_var WEBAPP_NAME
+  require_var RESOURCE_GROUP
+  local ping_path="${SWAP_WARMUP_PING_PATH:-}"
+  if [[ -z "$ping_path" ]]; then
+    echo "Swap warmup ping path is empty. Skipping warmup setting verification."
+    return 0
+  fi
+
+  local expected_statuses="${SWAP_WARMUP_PING_STATUSES:-}"
+  if [[ -z "$expected_statuses" ]]; then
+    expected_statuses="200"
+  fi
+  local warmup_path="${WARMUP_PATH:-}"
+  local staging_slot="${STAGING_SLOT:-staging}"
+  local slot
+
+  if [[ "$staging_slot" == "production" ]]; then
+    echo "::error::STAGING_SLOT must be a non-production slot."
+    exit 1
+  fi
+
+  for slot in production "$staging_slot"; do
+    require_slot_app_setting "$slot" "WEBSITE_SWAP_WARMUP_PING_PATH" "$ping_path"
+    require_slot_app_setting "$slot" "WEBSITE_SWAP_WARMUP_PING_STATUSES" "$expected_statuses"
+    if [[ -n "$warmup_path" ]]; then
+      require_slot_app_setting "$slot" "WEBSITE_WARMUP_PATH" "$warmup_path"
+    fi
+    echo "Slot ${slot} warmup settings match."
+  done
+}
+
 resolve_staging_health_url() {
   require_var WEBAPP_NAME
   require_var RESOURCE_GROUP
@@ -614,7 +677,7 @@ PY
 }
 
 usage() {
-  echo "Usage: $0 {autoswap-check|slot-start|slot-stop|staging-health|promote|production-health|smoke-test|rollback-swap}" >&2
+  echo "Usage: $0 {autoswap-check|warmup-settings-check|slot-start|slot-stop|staging-health|promote|production-health|smoke-test|rollback-swap}" >&2
   exit 1
 }
 
@@ -622,6 +685,7 @@ main() {
   [[ $# -eq 1 ]] || usage
   case "$1" in
     autoswap-check) cmd_autoswap_check ;;
+    warmup-settings-check) cmd_warmup_settings_check ;;
     slot-start) cmd_slot_start ;;
     slot-stop) cmd_slot_stop ;;
     staging-health) cmd_staging_health ;;

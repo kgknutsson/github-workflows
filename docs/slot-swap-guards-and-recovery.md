@@ -14,6 +14,27 @@ The promotion reusable uses ARM `slotsswap` with activity-log correlation. The J
 
 Do **not** enable Azure AutoSwap on the staging slot when GitHub Actions owns promotion. The promotion workflow fails preflight if AutoSwap is on.
 
+
+## Swap warmup ping
+
+Azure slot swap pings every worker. The default ping path is `/`. A database readiness path can miss the ping deadline (`the 'staging' slot did not respond to http ping`).
+
+Set these application settings in platform config, sticky on the production slot and the staging slot:
+
+| Setting | Example |
+|---------|---------|
+| `WEBSITE_SWAP_WARMUP_PING_PATH` | `/api/health/live` |
+| `WEBSITE_SWAP_WARMUP_PING_STATUSES` | `200` |
+| `WEBSITE_WARMUP_PATH` | `/api/health/live` |
+
+`/api/health/live` is an example of process liveness. It does not query the database. Callers choose their own fast path.
+
+Allow the App Service service tag on both slots (`service_tag` `AppService`, action Allow). Slot swap can leave each slot with the other slot's IP rules. A default deny without this allow rule blocks the platform ping.
+
+Set the App Service health check path to the liveness path so a database failure does not evict workers. A public edge probe, such as Front Door, can stay on the readiness path. Worker count and the health check path belong in platform config.
+
+Do not write these settings with `az webapp config appsettings set` in a deploy job. That command restarts the app. `azure-app-service-slot-promotion.yml` can read them before swap when the caller sets `swap-warmup-ping-path`. Empty inputs leave current callers unchanged. See [azure-app-service-slot-promotion.md](azure-app-service-slot-promotion.md).
+
 ## Recovery metadata (app repo)
 
 Interrupted swaps and deployment markers use App Service application settings:
