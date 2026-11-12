@@ -235,12 +235,21 @@ jobs:
           tenant-id: ${{ secrets.TENANT_ID || secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Create slot lock identity
+        id: lock_id
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "owner=${owner}" >> "$GITHUB_OUTPUT"
+
       - name: Acquire slot mutation lock
         id: slot_lock
         shell: bash
         env:
           WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
+          LOCK_OWNER: ${{ steps.lock_id.outputs.owner }}
           LOCK_WAIT_SECONDS: "180"
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-acquire
 
@@ -362,4 +371,5 @@ jobs:
         env:
           WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
+          LOCK_OWNER: ${{ steps.lock_id.outputs.owner }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release

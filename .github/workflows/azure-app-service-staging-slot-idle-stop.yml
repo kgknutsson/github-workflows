@@ -151,6 +151,15 @@ jobs:
           echo "webapp_name=$WEBAPP_NAME" >> "$GITHUB_OUTPUT"
           echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
 
+      - name: Create slot lock identity
+        id: lock_id
+        if: steps.busy.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "owner=${owner}" >> "$GITHUB_OUTPUT"
+
       - name: Acquire slot mutation lock
         id: slot_lock
         if: steps.busy.outputs.skip != 'true'
@@ -158,6 +167,7 @@ jobs:
         env:
           WEBAPP_NAME: ${{ steps.target.outputs.webapp_name }}
           RESOURCE_GROUP: ${{ steps.target.outputs.resource_group }}
+          LOCK_OWNER: ${{ steps.lock_id.outputs.owner }}
           LOCK_WAIT_SECONDS: "30"
         run: |
           set -euo pipefail
@@ -197,6 +207,19 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
+      - name: Reject a production slot name
+        if: steps.busy.outputs.skip != 'true' && steps.slot_lock.outputs.held == 'true' && steps.busy_locked.outputs.skip != 'true'
+        shell: bash
+        env:
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+        run: |
+          set -euo pipefail
+          slot="$(printf '%s' "$STAGING_SLOT" | tr '[:upper:]' '[:lower:]')"
+          if [ -z "$slot" ] || [ "$slot" = "production" ]; then
+            echo "::error::staging-slot must be a non-production slot name."
+            exit 1
+          fi
+
       - name: Stop the slot when it is running
         if: steps.busy.outputs.skip != 'true' && steps.slot_lock.outputs.held == 'true' && steps.busy_locked.outputs.skip != 'true'
         shell: bash
@@ -212,4 +235,5 @@ jobs:
         env:
           WEBAPP_NAME: ${{ steps.target.outputs.webapp_name }}
           RESOURCE_GROUP: ${{ steps.target.outputs.resource_group }}
+          LOCK_OWNER: ${{ steps.lock_id.outputs.owner }}
         run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release

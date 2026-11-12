@@ -183,12 +183,21 @@ jobs:
           sparse-checkout: |
             .github/scripts/azure-app-service-slot-promotion.sh
           sparse-checkout-cone-mode: false
+      - name: Create slot lock identity
+        id: lock_id
+        if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "owner=${owner}" >> "$GITHUB_OUTPUT"
       - name: Acquire slot mutation lock
         id: slot_lock
         if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
         env:
           WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
           RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          LOCK_OWNER: ${{ steps.lock_id.outputs.owner }}
           LOCK_WAIT_SECONDS: "180"
         run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-acquire
       - name: Start deploy slot before package deploy
@@ -253,10 +262,9 @@ jobs:
           STAGING_SLOT: ${{ inputs.slot-name }}
           HEALTH_CHECK_PATH: ${{ inputs.health_check_path }}
           STAGING_HEALTH_ATTEMPTS: ${{ inputs.staging_health_attempts }}
+          HEALTH_REQUEST_TIMEOUT_SECONDS: "10"
           POLL_INTERVAL_SECONDS: "10"
-        run: |
-          export STAGING_HEALTH_MAX_WAIT_SECONDS=$(( STAGING_HEALTH_ATTEMPTS * 10 ))
-          bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh staging-health
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh staging-health
       - name: Promote slot via ARM
         id: arm_promote
         if: env.APPLICATION_CAF_NAME != '' && inputs.explicit_slot_swap && inputs.slot-name != 'production'
@@ -277,10 +285,9 @@ jobs:
           RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
           HEALTH_CHECK_PATH: ${{ inputs.health_check_path }}
           PRODUCTION_HEALTH_ATTEMPTS: ${{ inputs.production_health_attempts }}
+          HEALTH_REQUEST_TIMEOUT_SECONDS: "10"
           POLL_INTERVAL_SECONDS: "10"
-        run: |
-          export PRODUCTION_HEALTH_MAX_WAIT_SECONDS=$(( PRODUCTION_HEALTH_ATTEMPTS * 10 ))
-          bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh production-health
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh production-health
           echo "PRODUCTION_HEALTH_PASSED=true" >> "$GITHUB_ENV"
       - name: Stop deploy slot after successful promotion
         if: env.APPLICATION_CAF_NAME != '' && inputs.manage_deploy_slot_lifecycle && env.PRODUCTION_HEALTH_PASSED == 'true'
@@ -359,12 +366,6 @@ jobs:
           done
 
           echo "::warning::Rollback health check did not pass - manual verification is required"
-      - name: Release slot mutation lock
-        if: always() && steps.slot_lock.outcome == 'success'
-        env:
-          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
-          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
-        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release
       - name: Deploy to Azure App Service
         if: env.APPLICATION_CAF_NAME != '' && inputs.slot-name2 != ''
         uses: azure/webapps-deploy@v3
@@ -373,6 +374,13 @@ jobs:
           slot-name: ${{ inputs.slot-name2 }}
           package: ${{ inputs.package }}
           target-path: ${{ inputs.target-path }}
+      - name: Release slot mutation lock
+        if: always() && steps.slot_lock.outcome == 'success'
+        env:
+          WEBAPP_NAME: ${{ env.APPLICATION_CAF_NAME }}
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          LOCK_OWNER: ${{ steps.lock_id.outputs.owner }}
+        run: bash shared-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release
       - name: Download function package
         if: inputs.deploy-function && env.FUNCTION_CAF_NAME != ''
         uses: actions/download-artifact@v8

@@ -161,19 +161,63 @@ wait_for_http() {
   exit 1
 }
 
+
+wait_for_http_attempts() {
+  local url="$1"
+  local attempts="$2"
+  local request_timeout="$3"
+  local poll_interval="$4"
+  local label="$5"
+  local expected="${EXPECTED_HTTP_STATUS:-200}"
+  local i status curl_exit
+  if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::Health attempts must be a positive integer."
+    exit 1
+  fi
+  if [[ ! "$request_timeout" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::Health request timeout must be a positive integer."
+    exit 1
+  fi
+  echo "Waiting for ${label}: ${url} (expect HTTP ${expected}, ${attempts} attempts, ${request_timeout}s each)"
+  for i in $(seq 1 "$attempts"); do
+    set +e
+    status="$(curl -sS -m "$request_timeout" -o /dev/null -w '%{http_code}' "$url")"
+    curl_exit=$?
+    set -e
+    if [[ "$curl_exit" -eq 0 && "$status" == "$expected" ]]; then
+      echo "${label} passed with HTTP ${status} on attempt ${i}/${attempts}."
+      return 0
+    fi
+    echo "${label} attempt ${i}/${attempts} returned HTTP ${status}."
+    if [[ "$i" -lt "$attempts" ]]; then
+      sleep "$poll_interval"
+    fi
+  done
+  echo "::error::${label} did not return HTTP ${expected} after ${attempts} attempts: ${url}"
+  exit 1
+}
+
 cmd_staging_health() {
-  local max_wait="${STAGING_HEALTH_MAX_WAIT_SECONDS:-600}"
-  local poll="${POLL_INTERVAL_SECONDS:-15}"
   local url
   url="$(resolve_staging_health_url)"
+  if [[ -n "${STAGING_HEALTH_ATTEMPTS:-}" ]]; then
+    wait_for_http_attempts "$url" "$STAGING_HEALTH_ATTEMPTS" "${HEALTH_REQUEST_TIMEOUT_SECONDS:-10}" "${POLL_INTERVAL_SECONDS:-10}" "Staging health check"
+    return
+  fi
+  local max_wait="${STAGING_HEALTH_MAX_WAIT_SECONDS:-600}"
+  local poll="${POLL_INTERVAL_SECONDS:-15}"
   wait_for_http "$url" "$max_wait" "$poll" "Staging health check"
 }
 
 cmd_production_health() {
-  local max_wait="${PRODUCTION_HEALTH_MAX_WAIT_SECONDS:-600}"
-  local poll="${POLL_INTERVAL_SECONDS:-15}"
   local url
   url="$(resolve_production_health_url)"
+  if [[ -n "${PRODUCTION_HEALTH_ATTEMPTS:-}" ]]; then
+    wait_for_http_attempts "$url" "$PRODUCTION_HEALTH_ATTEMPTS" "${HEALTH_REQUEST_TIMEOUT_SECONDS:-10}" "${POLL_INTERVAL_SECONDS:-10}" "Production health check"
+    return
+  fi
+  local max_wait="${PRODUCTION_HEALTH_MAX_WAIT_SECONDS:-600}"
+  local poll="${POLL_INTERVAL_SECONDS:-15}"
   wait_for_http "$url" "$max_wait" "$poll" "Production health check"
 }
 
@@ -264,7 +308,12 @@ cmd_slot_stop() {
   require_var WEBAPP_NAME
   require_var RESOURCE_GROUP
   STAGING_SLOT="${STAGING_SLOT:-staging}"
-  local slot_state error_file
+  local slot_state error_file slot_name
+  slot_name="$(printf '%s' "$STAGING_SLOT" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "$slot_name" || "$slot_name" == "production" ]]; then
+    echo "::error::staging-slot must be a non-production slot name."
+    exit 1
+  fi
   error_file="$(mktemp)"
 
   if ! slot_state="$(az webapp show \
@@ -644,14 +693,17 @@ slot_lock_tag() {
 }
 
 slot_lock_owner() {
-  local run_id attempt
-  run_id="${LOCK_OWNER:-${GITHUB_RUN_ID:-}}"
-  attempt="${GITHUB_RUN_ATTEMPT:-1}"
-  if [[ -z "$run_id" ]]; then
-    echo "::error::GITHUB_RUN_ID is not set. Set LOCK_OWNER to identify the slot lock."
+  local owner
+  if [[ -n "${LOCK_OWNER:-}" ]]; then
+    owner="$LOCK_OWNER"
+  else
+    owner="${GITHUB_RUN_ID:-}:${GITHUB_RUN_ATTEMPT:-1}:${GITHUB_JOB:-}"
+  fi
+  if [[ -z "$owner" || "$owner" == ":"* ]]; then
+    echo "::error::Set LOCK_OWNER to a unique id for this job."
     exit 1
   fi
-  printf '%s:%s' "$run_id" "$attempt"
+  printf '%s' "$owner"
 }
 
 slot_lock_read() {
