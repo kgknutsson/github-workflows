@@ -126,6 +126,29 @@ on:
         type: boolean
         required: false
         default: false
+      swap-warmup-ping-path:
+        description: >-
+          When non-empty, read WEBSITE_SWAP_WARMUP_PING_PATH on the production slot and
+          the staging slot and fail before swap when the value does not match.
+          Leave this empty to skip the check. This job only reads the setting.
+        type: string
+        required: false
+        default: ''
+      swap-warmup-ping-statuses:
+        description: >-
+          Expected WEBSITE_SWAP_WARMUP_PING_STATUSES when swap-warmup-ping-path is set.
+          Empty means 200. Ignored when swap-warmup-ping-path is empty.
+        type: string
+        required: false
+        default: ''
+      warmup-path:
+        description: >-
+          When non-empty together with swap-warmup-ping-path, also require
+          WEBSITE_WARMUP_PATH on both slots. Empty skips that setting.
+          This job only reads the setting.
+        type: string
+        required: false
+        default: ''
     secrets:
       CLIENT_ID:
         required: false
@@ -181,6 +204,9 @@ jobs:
           PACKAGE_PATH: ${{ inputs.package-path }}
           PACKAGE_ARTIFACT_NAME: ${{ inputs.package-artifact-name }}
           PACKAGE_ARTIFACT_FILENAME: ${{ inputs.package-artifact-filename }}
+          SWAP_WARMUP_PING_PATH: ${{ inputs.swap-warmup-ping-path }}
+          SWAP_WARMUP_PING_STATUSES: ${{ inputs.swap-warmup-ping-statuses }}
+          WARMUP_PATH: ${{ inputs.warmup-path }}
         run: |
           set -euo pipefail
           missing=0
@@ -212,6 +238,11 @@ jobs:
           fi
           if [ -n "$PACKAGE_PATH" ] && [ -z "$PACKAGE_ARTIFACT_NAME" ] && [[ "$PACKAGE_PATH" != /* ]] && [[ "$PACKAGE_PATH" != ./* ]]; then
             echo "::warning::package-path is set without package-artifact-name. The file must already exist on this runner (for example from a prior job artifact download in the caller workflow)."
+          fi
+          if [ -z "${SWAP_WARMUP_PING_PATH:-}" ]; then
+            if [ -n "${SWAP_WARMUP_PING_STATUSES:-}" ] || [ -n "${WARMUP_PATH:-}" ]; then
+              echo "::notice::swap-warmup-ping-path is empty, so warmup setting verification is skipped."
+            fi
           fi
           if [ "$missing" -ne 0 ]; then
             exit 1
@@ -260,6 +291,18 @@ jobs:
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh autoswap-check
+
+      - name: Verify slot warmup settings
+        if: inputs.swap-warmup-ping-path != ''
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+          SWAP_WARMUP_PING_PATH: ${{ inputs.swap-warmup-ping-path }}
+          SWAP_WARMUP_PING_STATUSES: ${{ inputs.swap-warmup-ping-statuses }}
+          WARMUP_PATH: ${{ inputs.warmup-path }}
+        run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh warmup-settings-check
 
       - name: Start staging slot before deploy
         if: inputs.manage_deploy_slot_lifecycle
