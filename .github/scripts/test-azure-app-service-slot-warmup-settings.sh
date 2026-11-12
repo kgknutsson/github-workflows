@@ -35,11 +35,13 @@ if [[ "${1:-}" != "webapp" || "${2:-}" != "config" || "${3:-}" != "appsettings" 
   exit 1
 fi
 slot=""
+explicit_slot=0
 query=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --slot)
       slot="$2"
+      explicit_slot=1
       shift 2
       ;;
     --query)
@@ -52,8 +54,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 name="$(printf '%s' "$query" | sed -n "s/.*name=='\\([^']*\\)'.*/\\1/p")"
-if [[ -z "$slot" || -z "$name" ]]; then
+if [[ "$explicit_slot" -eq 0 ]]; then
+  slot="production"
+fi
+slot="$(printf '%s' "$slot" | tr '[:upper:]' '[:lower:]')"
+if [[ -z "$name" || -z "$slot" ]]; then
   echo "could not parse slot or setting" >&2
+  exit 1
+fi
+if [[ "$explicit_slot" -eq 1 && "$slot" == "production" ]]; then
+  echo "production is not a named slot" >&2
   exit 1
 fi
 line="$(grep -F -m 1 "${slot}|${name}|" "$settings" || true)"
@@ -133,7 +143,7 @@ expect_fail() {
     printf '%s\n' "$output" >&2
     exit 1
   fi
-  if [[ "$expected" != *"Apply Terraform"* ]] && grep -Fq "Apply Terraform" <<<"$output"; then
+  if [[ "$expected" != *"Expected "* ]] && grep -Fq "Expected " <<<"$output"; then
     echo "Read failure must not look like a setting mismatch." >&2
     printf '%s\n' "$output" >&2
     exit 1
@@ -173,7 +183,7 @@ fi
 reset_case
 write_match production "/" "200" "/api/health/live"
 write_match staging "/api/health/live" "200" "/api/health/live"
-expect_fail "Slot production WEBSITE_SWAP_WARMUP_PING_PATH is '/'. Apply Terraform so it is /api/health/live." staging \
+expect_fail "Slot production WEBSITE_SWAP_WARMUP_PING_PATH is '/'. Expected /api/health/live." staging \
   SWAP_WARMUP_PING_PATH="/api/health/live" \
   WARMUP_PATH="/api/health/live"
 
@@ -181,7 +191,7 @@ reset_case
 write_match production "/api/health/live" "200" "/api/health/live"
 write_setting staging "WEBSITE_SWAP_WARMUP_PING_PATH" "/api/health/live"
 write_setting staging "WEBSITE_WARMUP_PATH" "/api/health/live"
-expect_fail "Slot staging WEBSITE_SWAP_WARMUP_PING_STATUSES is 'unset'. Apply Terraform so it is 200." staging \
+expect_fail "Slot staging WEBSITE_SWAP_WARMUP_PING_STATUSES is 'unset'. Expected 200." staging \
   SWAP_WARMUP_PING_PATH="/api/health/live" \
   WARMUP_PATH="/api/health/live"
 
@@ -197,5 +207,23 @@ write_match production "/api/health/live" "200"
 export AZ_FAKE_FAIL=1
 expect_fail "Failed to read App Service setting 'WEBSITE_SWAP_WARMUP_PING_PATH' on slot 'production'." staging \
   SWAP_WARMUP_PING_PATH="/api/health/live"
+
+if grep -F -- "--slot production" "$AZ_FAKE_LOG"; then
+  echo "Production reads must omit --slot." >&2
+  exit 1
+fi
+
+reset_case
+write_match production "/api/health/live" "200"
+if "${work_dir}/az" webapp config appsettings list --slot production --query "[?name=='WEBSITE_SWAP_WARMUP_PING_PATH'].value | [0]" >/dev/null 2>"${work_dir}/reject.txt"; then
+  echo "Fake az must reject --slot production." >&2
+  exit 1
+fi
+omitted="$("${work_dir}/az" webapp config appsettings list --name app-test --resource-group rg-test --query "[?name=='WEBSITE_SWAP_WARMUP_PING_PATH'].value | [0]")"
+if [[ "$omitted" != "/api/health/live" ]]; then
+  echo "An omitted slot must read the production site." >&2
+  printf '%s\n' "$omitted" >&2
+  exit 1
+fi
 
 echo "Slot warmup setting checks passed."

@@ -8,9 +8,9 @@ This document explains how **promotion**, **inline Terraform swap**, **recovery 
 |--------|-------------|-----------------|
 | **Promote only** | Staging already has the build | Reusable `azure-app-service-slot-promotion.yml` |
 | **Deploy package + promote** | One workflow builds, uploads artifact, then promotes | Same reusable workflow (`package-artifact-name`) |
-| **Inline Terraform / Java deploy** | Existing `terraform-java-app-service.yml` with `explicit_slot_swap: true` | `az webapp deployment slot swap` inside deploy job |
+| **Java GitOps deploy** | Existing `terraform-java-app-service.yml` with `explicit_slot_swap: true` | Same ARM script as the promotion workflow (`promote`, then `production-health`) |
 
-The promotion reusable uses ARM `slotsswap` with activity-log correlation. The Java workflow keeps health-gated `az webapp deployment slot swap` for callers that already use that contract.
+The promotion workflow and the Java explicit slot swap both call `.github/scripts/azure-app-service-slot-promotion.sh`. Rollback after a confirmed swap still uses one CLI swap. A second swap is not used to guess whether a timed-out request finished.
 
 Do **not** enable Azure AutoSwap on the staging slot when GitHub Actions owns promotion. The promotion workflow fails preflight if AutoSwap is on.
 
@@ -33,7 +33,9 @@ Allow the App Service service tag on both slots (`service_tag` `AppService`, act
 
 Set the App Service health check path to the liveness path so a database failure does not evict workers. A public edge probe, such as Front Door, can stay on the readiness path. Worker count and the health check path belong in platform config.
 
-Do not write these settings with `az webapp config appsettings set` in a deploy job. That command restarts the app. `azure-app-service-slot-promotion.yml` can read them before swap when the caller sets `swap-warmup-ping-path`. Empty inputs leave current callers unchanged. See [azure-app-service-slot-promotion.md](azure-app-service-slot-promotion.md).
+Do not write these settings with `az webapp config appsettings set` in a deploy job. That command restarts the app. `azure-app-service-slot-promotion.yml` can read them before swap when the caller sets `swap-warmup-ping-path`. Empty inputs leave current callers unchanged. The production site is the app, so the read omits the slot name. See [azure-app-service-slot-promotion.md](azure-app-service-slot-promotion.md).
+
+Stop the staging slot only after production health passes. A failed promotion leaves the slot running so the failed build can be inspected. A weekly idle-stop caller stops that slot later. See [examples/staging-slot-idle-stop-cron.yml](examples/staging-slot-idle-stop-cron.yml). Keep the idle stop out of the deploy concurrency group. A shared group cancels a deploy that is waiting. The stop takes the web app tag `github-actions-slot-lock`, checks the named deploy workflows again, and then stops the slot. A deploy takes the same lock before it changes the slot.
 
 ## Recovery metadata (app repo)
 
