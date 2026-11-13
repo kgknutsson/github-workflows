@@ -1,0 +1,31 @@
+# Caller-owned schedule. Once a week, at night (Sunday 02:00 UTC).
+# Do not pass the deploy concurrency group.
+# A shared group cancels a deploy that is waiting in that group.
+# deploy-workflows names the deploy files. The stop skips when one of them is queued or in progress.
+
+name: Staging slot idle stop
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+jobs:
+  stop:
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    uses: kgknutsson/github-workflows/.github/workflows/azure-app-service-staging-slot-idle-stop.yml@v4 # internal v4 tag; a commit hash is not required for this dependency
+    with:
+      environment: prod
+      webapp-name: ${{ vars.WEBAPP_NAME }}
+      resource-group: ${{ vars.RESOURCE_GROUP }}
+      staging-slot: staging
+      concurrency-group: prod
+      deploy-workflows: deploy-app.yml
+      scripts-ref: v4
+    secrets:
+      CLIENT_ID: ${{ secrets.CLIENT_ID }}
+      TENANT_ID: ${{ secrets.TENANT_ID }}
+      SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}

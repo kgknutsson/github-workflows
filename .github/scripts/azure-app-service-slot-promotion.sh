@@ -43,6 +43,78 @@ cmd_autoswap_check() {
   echo "Verified auto-swap is disabled on ${WEBAPP_NAME}/${staging_slot}."
 }
 
+read_slot_app_setting() {
+  local slot="$1"
+  local name="$2"
+  local value slot_name slot_args=()
+  slot_name="$(printf '%s' "$slot" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "$slot_name" ]]; then
+    echo "::error::App Service slot name is empty." >&2
+    return 1
+  fi
+  # The production site is the app. It has no deployment slot named production.
+  if [[ "$slot_name" != "production" ]]; then
+    slot_args=(--slot "$slot")
+  fi
+  if ! value="$(az webapp config appsettings list \
+    --name "$WEBAPP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    "${slot_args[@]}" \
+    --query "[?name=='${name}'].value | [0]" \
+    --output tsv)"; then
+    echo "::error::Failed to read App Service setting '${name}' on slot '${slot}'." >&2
+    return 1
+  fi
+  normalize_setting "$value"
+}
+
+require_slot_app_setting() {
+  local slot="$1"
+  local name="$2"
+  local expected="$3"
+  local current shown
+  if ! current="$(read_slot_app_setting "$slot" "$name")"; then
+    exit 1
+  fi
+  if [[ "$current" != "$expected" ]]; then
+    shown="${current:-unset}"
+    echo "::error::Slot ${slot} ${name} is '${shown}'. Expected ${expected}."
+    exit 1
+  fi
+}
+
+cmd_warmup_settings_check() {
+  require_var WEBAPP_NAME
+  require_var RESOURCE_GROUP
+  local ping_path="${SWAP_WARMUP_PING_PATH:-}"
+  if [[ -z "$ping_path" ]]; then
+    echo "Swap warmup ping path is empty. Skipping warmup setting verification."
+    return 0
+  fi
+
+  local expected_statuses="${SWAP_WARMUP_PING_STATUSES:-}"
+  if [[ -z "$expected_statuses" ]]; then
+    expected_statuses="200"
+  fi
+  local warmup_path="${WARMUP_PATH:-}"
+  local staging_slot="${STAGING_SLOT:-staging}"
+  local slot
+
+  if [[ "$staging_slot" == "production" ]]; then
+    echo "::error::STAGING_SLOT must be a non-production slot."
+    exit 1
+  fi
+
+  for slot in production "$staging_slot"; do
+    require_slot_app_setting "$slot" "WEBSITE_SWAP_WARMUP_PING_PATH" "$ping_path"
+    require_slot_app_setting "$slot" "WEBSITE_SWAP_WARMUP_PING_STATUSES" "$expected_statuses"
+    if [[ -n "$warmup_path" ]]; then
+      require_slot_app_setting "$slot" "WEBSITE_WARMUP_PATH" "$warmup_path"
+    fi
+    echo "Slot ${slot} warmup settings match."
+  done
+}
+
 resolve_staging_health_url() {
   require_var WEBAPP_NAME
   require_var RESOURCE_GROUP
@@ -161,19 +233,63 @@ wait_for_http() {
   exit 1
 }
 
+
+wait_for_http_attempts() {
+  local url="$1"
+  local attempts="$2"
+  local request_timeout="$3"
+  local poll_interval="$4"
+  local label="$5"
+  local expected="${EXPECTED_HTTP_STATUS:-200}"
+  local i status curl_exit
+  if [[ ! "$attempts" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::Health attempts must be a positive integer."
+    exit 1
+  fi
+  if [[ ! "$request_timeout" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::Health request timeout must be a positive integer."
+    exit 1
+  fi
+  echo "Waiting for ${label}: ${url} (expect HTTP ${expected}, ${attempts} attempts, ${request_timeout}s each)"
+  for i in $(seq 1 "$attempts"); do
+    set +e
+    status="$(curl -sS -m "$request_timeout" -o /dev/null -w '%{http_code}' "$url")"
+    curl_exit=$?
+    set -e
+    if [[ "$curl_exit" -eq 0 && "$status" == "$expected" ]]; then
+      echo "${label} passed with HTTP ${status} on attempt ${i}/${attempts}."
+      return 0
+    fi
+    echo "${label} attempt ${i}/${attempts} returned HTTP ${status}."
+    if [[ "$i" -lt "$attempts" ]]; then
+      sleep "$poll_interval"
+    fi
+  done
+  echo "::error::${label} did not return HTTP ${expected} after ${attempts} attempts: ${url}"
+  exit 1
+}
+
 cmd_staging_health() {
-  local max_wait="${STAGING_HEALTH_MAX_WAIT_SECONDS:-600}"
-  local poll="${POLL_INTERVAL_SECONDS:-15}"
   local url
   url="$(resolve_staging_health_url)"
+  if [[ -n "${STAGING_HEALTH_ATTEMPTS:-}" ]]; then
+    wait_for_http_attempts "$url" "$STAGING_HEALTH_ATTEMPTS" "${HEALTH_REQUEST_TIMEOUT_SECONDS:-10}" "${POLL_INTERVAL_SECONDS:-10}" "Staging health check"
+    return
+  fi
+  local max_wait="${STAGING_HEALTH_MAX_WAIT_SECONDS:-600}"
+  local poll="${POLL_INTERVAL_SECONDS:-15}"
   wait_for_http "$url" "$max_wait" "$poll" "Staging health check"
 }
 
 cmd_production_health() {
-  local max_wait="${PRODUCTION_HEALTH_MAX_WAIT_SECONDS:-600}"
-  local poll="${POLL_INTERVAL_SECONDS:-15}"
   local url
   url="$(resolve_production_health_url)"
+  if [[ -n "${PRODUCTION_HEALTH_ATTEMPTS:-}" ]]; then
+    wait_for_http_attempts "$url" "$PRODUCTION_HEALTH_ATTEMPTS" "${HEALTH_REQUEST_TIMEOUT_SECONDS:-10}" "${POLL_INTERVAL_SECONDS:-10}" "Production health check"
+    return
+  fi
+  local max_wait="${PRODUCTION_HEALTH_MAX_WAIT_SECONDS:-600}"
+  local poll="${POLL_INTERVAL_SECONDS:-15}"
   wait_for_http "$url" "$max_wait" "$poll" "Production health check"
 }
 
@@ -184,12 +300,18 @@ cmd_smoke_test() {
   wait_for_http "$SMOKE_TEST_URL" "$max_wait" "$poll" "Smoke test"
 }
 
+remove_temp_file() {
+  local path="${1:-}"
+  if [[ -n "$path" ]]; then
+    rm -f -- "$path"
+  fi
+}
+
 wait_for_slot_state() {
   local desired_state="$1"
   local label="$2"
   local attempt slot_state error_file
   error_file="$(mktemp)"
-  trap 'rm -f "$error_file"' RETURN
 
   for attempt in $(seq 1 12); do
     if ! slot_state="$(az webapp show \
@@ -200,16 +322,19 @@ wait_for_slot_state() {
       --output tsv 2>"$error_file")"; then
       echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}' (attempt ${attempt})"
       cat "$error_file"
+      remove_temp_file "$error_file"
       return 1
     fi
     if [[ "$slot_state" == "$desired_state" ]]; then
       echo "${label}: slot '${STAGING_SLOT}' is ${desired_state}"
+      remove_temp_file "$error_file"
       return 0
     fi
     sleep 10
   done
 
   echo "::error::Slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}' did not reach ${desired_state} state in time (last: ${slot_state})"
+  remove_temp_file "$error_file"
   return 1
 }
 
@@ -219,7 +344,6 @@ cmd_slot_start() {
   STAGING_SLOT="${STAGING_SLOT:-staging}"
   local slot_state error_file
   error_file="$(mktemp)"
-  trap 'rm -f "$error_file"' RETURN
 
   if ! slot_state="$(az webapp show \
     --name "$WEBAPP_NAME" \
@@ -229,10 +353,12 @@ cmd_slot_start() {
     --output tsv 2>"$error_file")"; then
     echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}'"
     cat "$error_file"
+    remove_temp_file "$error_file"
     exit 1
   fi
   if [[ "$slot_state" == "Running" ]]; then
     echo "Deploy slot '${STAGING_SLOT}' is already Running"
+    remove_temp_file "$error_file"
     exit 0
   fi
 
@@ -243,8 +369,10 @@ cmd_slot_start() {
     --slot "$STAGING_SLOT" 2>"$error_file"; then
     echo "::error::Failed to start slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}'"
     cat "$error_file"
+    remove_temp_file "$error_file"
     exit 1
   fi
+  remove_temp_file "$error_file"
   wait_for_slot_state "Running" "Start deploy slot"
 }
 
@@ -252,9 +380,13 @@ cmd_slot_stop() {
   require_var WEBAPP_NAME
   require_var RESOURCE_GROUP
   STAGING_SLOT="${STAGING_SLOT:-staging}"
-  local slot_state error_file
+  local slot_state error_file slot_name
+  slot_name="$(printf '%s' "$STAGING_SLOT" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "$slot_name" || "$slot_name" == "production" ]]; then
+    echo "::error::staging-slot must be a non-production slot name."
+    exit 1
+  fi
   error_file="$(mktemp)"
-  trap 'rm -f "$error_file"' RETURN
 
   if ! slot_state="$(az webapp show \
     --name "$WEBAPP_NAME" \
@@ -264,10 +396,12 @@ cmd_slot_stop() {
     --output tsv 2>"$error_file")"; then
     echo "::error::Failed to query slot '${STAGING_SLOT}' state for app '${WEBAPP_NAME}'"
     cat "$error_file"
+    remove_temp_file "$error_file"
     exit 1
   fi
   if [[ "$slot_state" == "Stopped" ]]; then
     echo "Deploy slot '${STAGING_SLOT}' is already Stopped"
+    remove_temp_file "$error_file"
     exit 0
   fi
 
@@ -278,8 +412,10 @@ cmd_slot_stop() {
     --slot "$STAGING_SLOT" 2>"$error_file"; then
     echo "::error::Failed to stop slot '${STAGING_SLOT}' for app '${WEBAPP_NAME}'"
     cat "$error_file"
+    remove_temp_file "$error_file"
     exit 1
   fi
+  remove_temp_file "$error_file"
   wait_for_slot_state "Stopped" "Stop deploy slot"
 }
 
@@ -598,8 +734,196 @@ PY
   exit 1
 }
 
+cmd_deploy_busy() {
+  local raw file status count
+  if [[ -z "${DEPLOY_WORKFLOWS:-}" ]]; then
+    echo "::error::Set deploy-workflows so the stop can see an active deploy."
+    exit 1
+  fi
+  if [[ -z "${GH_TOKEN:-}" ]]; then
+    echo "::error::GH_TOKEN is not set."
+    exit 1
+  fi
+  IFS=',' read -ra files <<< "$DEPLOY_WORKFLOWS"
+  for raw in "${files[@]}"; do
+    file="${raw#"${raw%%[![:space:]]*}"}"
+    file="${file%"${file##*[![:space:]]}"}"
+    [[ -n "$file" ]] || continue
+    for status in queued in_progress waiting requested pending; do
+      count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${file}/runs?status=${status}&per_page=1" --jq '.total_count')"
+      if [[ "${count}" != "0" ]]; then
+        echo "A deploy is active. ${file} has a ${status} run."
+        exit 2
+      fi
+    done
+  done
+  echo "No named deploy is queued or running."
+}
+
+slot_lock_tag() {
+  printf 'github-actions-slot-lock'
+}
+
+slot_lock_owner() {
+  local owner
+  if [[ -n "${LOCK_OWNER:-}" ]]; then
+    owner="$LOCK_OWNER"
+  else
+    owner="${GITHUB_RUN_ID:-}:${GITHUB_RUN_ATTEMPT:-1}:${GITHUB_JOB:-}"
+  fi
+  if [[ -z "$owner" || "$owner" == ":"* ]]; then
+    echo "::error::Set LOCK_OWNER to a unique id for this job."
+    exit 1
+  fi
+  printf '%s' "$owner"
+}
+
+slot_lock_read() {
+  local site_id token url header_file body_file etag
+  require_var WEBAPP_NAME
+  require_var RESOURCE_GROUP
+  site_id="$(az webapp show --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query id --output tsv)"
+  token="$(az account get-access-token --resource https://management.azure.com/ --query accessToken --output tsv)"
+  if [[ -z "$site_id" || -z "$token" ]]; then
+    echo "::error::Could not read the web app for the slot lock."
+    exit 1
+  fi
+  url="https://management.azure.com${site_id}?api-version=2024-11-01"
+  header_file="$(mktemp)"
+  body_file="$(mktemp)"
+  if ! curl --silent --show-error --fail \
+    -D "$header_file" \
+    -o "$body_file" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/json" \
+    "$url"; then
+    rm -f "$header_file" "$body_file"
+    echo "::error::Could not read web app tags for the slot lock."
+    exit 1
+  fi
+  etag="$(sed -n 's/\r$//; s/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p' "$header_file" | head -n 1)"
+  rm -f "$header_file"
+  if [[ -z "$etag" ]]; then
+    rm -f "$body_file"
+    echo "::error::The web app response did not include an ETag."
+    exit 1
+  fi
+  SLOT_LOCK_URL="$url"
+  SLOT_LOCK_TOKEN="$token"
+  SLOT_LOCK_ETAG="$etag"
+  SLOT_LOCK_BODY="$body_file"
+}
+
+slot_lock_value() {
+  local body="$1"
+  jq -r --arg key "$(slot_lock_tag)" '.tags[$key] // empty' "$body"
+}
+
+slot_lock_held_by_us() {
+  local value="$1"
+  local owner
+  owner="$(slot_lock_owner)"
+  [[ "$value" == "${owner}:"* ]]
+}
+
+slot_lock_is_stale() {
+  local value="$1"
+  local epoch now stale_seconds age
+  stale_seconds="${LOCK_STALE_SECONDS:-21600}"
+  epoch="${value##*:}"
+  if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  now="$(date +%s)"
+  age=$((now - epoch))
+  [[ "$age" -gt "$stale_seconds" ]]
+}
+
+slot_lock_patch() {
+  local payload http err_file
+  payload="$1"
+  err_file="$(mktemp)"
+  http="$(curl --silent --show-error \
+    -o "$err_file" \
+    -w "%{http_code}" \
+    -X PATCH \
+    -H "Authorization: Bearer ${SLOT_LOCK_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -H "If-Match: ${SLOT_LOCK_ETAG}" \
+    -d "$payload" \
+    "$SLOT_LOCK_URL")" || true
+  rm -f "$err_file"
+  printf '%s' "$http"
+}
+
+cmd_lock_acquire() {
+  local wait_seconds deadline now value owner payload http key
+  wait_seconds="${LOCK_WAIT_SECONDS:-180}"
+  if [[ ! "$wait_seconds" =~ ^[0-9]+$ ]]; then
+    echo "::error::LOCK_WAIT_SECONDS must be a non-negative integer."
+    exit 1
+  fi
+  key="$(slot_lock_tag)"
+  owner="$(slot_lock_owner)"
+  deadline=$(( $(date +%s) + wait_seconds ))
+  while true; do
+    slot_lock_read
+    value="$(slot_lock_value "$SLOT_LOCK_BODY")"
+    now="$(date +%s)"
+    if [[ -z "$value" || $(slot_lock_held_by_us "$value" && echo yes || echo no) == yes || $(slot_lock_is_stale "$value" && echo yes || echo no) == yes ]]; then
+      payload="$(jq -c --arg key "$key" --arg value "${owner}:${now}" '
+        {tags: ((.tags // {}) + {($key): $value})}
+      ' "$SLOT_LOCK_BODY")"
+      http="$(slot_lock_patch "$payload")"
+      rm -f "$SLOT_LOCK_BODY"
+      if [[ "$http" == "200" || "$http" == "201" ]]; then
+        echo "Acquired the slot lock."
+        exit 0
+      fi
+      if [[ "$http" != "412" ]]; then
+        echo "::error::Could not write the slot lock. HTTP ${http}."
+        exit 1
+      fi
+    else
+      rm -f "$SLOT_LOCK_BODY"
+    fi
+    if [[ "$now" -ge "$deadline" ]]; then
+      echo "The slot lock is held by another run."
+      exit 2
+    fi
+    sleep 5
+  done
+}
+
+cmd_lock_release() {
+  local value payload http key
+  key="$(slot_lock_tag)"
+  slot_lock_read
+  value="$(slot_lock_value "$SLOT_LOCK_BODY")"
+  if ! slot_lock_held_by_us "$value"; then
+    rm -f "$SLOT_LOCK_BODY"
+    echo "This run does not hold the slot lock."
+    exit 0
+  fi
+  payload="$(jq -c --arg key "$key" '
+    {tags: ((.tags // {}) | del(.[$key]))}
+  ' "$SLOT_LOCK_BODY")"
+  http="$(slot_lock_patch "$payload")"
+  rm -f "$SLOT_LOCK_BODY"
+  if [[ "$http" == "200" || "$http" == "201" ]]; then
+    echo "Released the slot lock."
+    exit 0
+  fi
+  if [[ "$http" == "412" ]]; then
+    echo "::error::The slot lock changed before it could be released."
+    exit 1
+  fi
+  echo "::error::Could not release the slot lock. HTTP ${http}."
+  exit 1
+}
+
 usage() {
-  echo "Usage: $0 {autoswap-check|slot-start|slot-stop|staging-health|promote|production-health|smoke-test|rollback-swap}" >&2
+  echo "Usage: $0 {autoswap-check|warmup-settings-check|slot-start|slot-stop|staging-health|promote|production-health|smoke-test|rollback-swap|lock-acquire|lock-release|deploy-busy}" >&2
   exit 1
 }
 
@@ -607,6 +931,7 @@ main() {
   [[ $# -eq 1 ]] || usage
   case "$1" in
     autoswap-check) cmd_autoswap_check ;;
+    warmup-settings-check) cmd_warmup_settings_check ;;
     slot-start) cmd_slot_start ;;
     slot-stop) cmd_slot_stop ;;
     staging-health) cmd_staging_health ;;
@@ -614,6 +939,9 @@ main() {
     production-health) cmd_production_health ;;
     smoke-test) cmd_smoke_test ;;
     rollback-swap) cmd_rollback_swap ;;
+    lock-acquire) cmd_lock_acquire ;;
+    lock-release) cmd_lock_release ;;
+    deploy-busy) cmd_deploy_busy ;;
     *) usage ;;
   esac
 }

@@ -9,6 +9,8 @@ Pin `@dev` or `@v4` and set matching `scripts-ref`.
 
 Optional input `manage_deploy_slot_lifecycle` (default `false`): when `true`, starts the staging slot before deploy or health checks and stops it after production health passes.
 
+Optional input `swap-warmup-ping-path` (default empty) reads `WEBSITE_SWAP_WARMUP_PING_PATH`, `WEBSITE_SWAP_WARMUP_PING_STATUSES`, and, when `warmup-path` is set, `WEBSITE_WARMUP_PATH` on the production slot and the staging slot. A mismatch fails the job before swap. Empty inputs keep the previous behavior. The job does not write those settings. Set them in platform config, sticky on both slots, and allow the App Service service tag on both slots. Use a liveness path that does not query the database. See [docs/azure-app-service-slot-promotion.md](docs/azure-app-service-slot-promotion.md).
+
 ## azure-webapp-zip-deploy.yml
 
 Direct zip deploy to a Web App slot with a post-deploy health gate. Use for dev (production slot) while prod uses `azure-app-service-slot-promotion.yml`. See [docs/azure-webapp-zip-deploy.md](docs/azure-webapp-zip-deploy.md).

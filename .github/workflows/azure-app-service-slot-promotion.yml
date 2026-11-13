@@ -8,9 +8,10 @@ on:
         type: string
         required: true
       webapp-name:
-        description: Azure Web App name (production slot).
+        description: Azure Web App name. When empty, the job uses the AZURE_WEBAPP_NAME secret.
         type: string
-        required: true
+        required: false
+        default: ''
       resource-group:
         description: Resource group containing the web app.
         type: string
@@ -125,12 +126,43 @@ on:
         type: boolean
         required: false
         default: false
+      swap-warmup-ping-path:
+        description: >-
+          When non-empty, read WEBSITE_SWAP_WARMUP_PING_PATH on the production slot and
+          the staging slot and fail before swap when the value does not match.
+          Leave this empty to skip the check. This job only reads the setting.
+        type: string
+        required: false
+        default: ''
+      swap-warmup-ping-statuses:
+        description: >-
+          Expected WEBSITE_SWAP_WARMUP_PING_STATUSES when swap-warmup-ping-path is set.
+          Empty means 200. Ignored when swap-warmup-ping-path is empty.
+        type: string
+        required: false
+        default: ''
+      warmup-path:
+        description: >-
+          When non-empty together with swap-warmup-ping-path, also require
+          WEBSITE_WARMUP_PATH on both slots. Empty skips that setting.
+          This job only reads the setting.
+        type: string
+        required: false
+        default: ''
     secrets:
       CLIENT_ID:
         required: false
       TENANT_ID:
         required: false
       SUBSCRIPTION_ID:
+        required: false
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        required: false
+      AZURE_WEBAPP_NAME:
         required: false
     outputs:
       promotion-client-request-id:
@@ -142,11 +174,11 @@ on:
 
 jobs:
   promote:
-    name: Promote ${{ inputs.webapp-name }}
+    name: Promote ${{ inputs.webapp-name || inputs.environment }}
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     concurrency:
-      group: app-service-promotion-${{ inputs.resource-group }}-${{ inputs.webapp-name }}
+      group: app-service-promotion-${{ inputs.resource-group }}-${{ inputs.webapp-name || inputs.environment }}
       cancel-in-progress: false
     permissions:
       id-token: write
@@ -158,7 +190,7 @@ jobs:
       - name: Preflight configuration
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
           TARGET_SLOT: ${{ inputs.target-slot }}
@@ -172,6 +204,9 @@ jobs:
           PACKAGE_PATH: ${{ inputs.package-path }}
           PACKAGE_ARTIFACT_NAME: ${{ inputs.package-artifact-name }}
           PACKAGE_ARTIFACT_FILENAME: ${{ inputs.package-artifact-filename }}
+          SWAP_WARMUP_PING_PATH: ${{ inputs.swap-warmup-ping-path }}
+          SWAP_WARMUP_PING_STATUSES: ${{ inputs.swap-warmup-ping-statuses }}
+          WARMUP_PATH: ${{ inputs.warmup-path }}
         run: |
           set -euo pipefail
           missing=0
@@ -204,6 +239,11 @@ jobs:
           if [ -n "$PACKAGE_PATH" ] && [ -z "$PACKAGE_ARTIFACT_NAME" ] && [[ "$PACKAGE_PATH" != /* ]] && [[ "$PACKAGE_PATH" != ./* ]]; then
             echo "::warning::package-path is set without package-artifact-name. The file must already exist on this runner (for example from a prior job artifact download in the caller workflow)."
           fi
+          if [ -z "${SWAP_WARMUP_PING_PATH:-}" ]; then
+            if [ -n "${SWAP_WARMUP_PING_STATUSES:-}" ] || [ -n "${WARMUP_PATH:-}" ]; then
+              echo "::notice::swap-warmup-ping-path is empty, so warmup setting verification is skipped."
+            fi
+          fi
           if [ "$missing" -ne 0 ]; then
             exit 1
           fi
@@ -222,23 +262,53 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v3
         with:
-          client-id: ${{ secrets.CLIENT_ID }}
-          tenant-id: ${{ secrets.TENANT_ID }}
-          subscription-id: ${{ secrets.SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.TENANT_ID || secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create slot lock identity
+        id: lock_id
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "owner=${owner}" >> "$GITHUB_OUTPUT"
+
+      - name: Acquire slot mutation lock
+        id: slot_lock
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          LOCK_OWNER: ${{ steps.lock_id.outputs.owner }}
+          LOCK_WAIT_SECONDS: "180"
+        run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-acquire
 
       - name: Verify Azure AutoSwap is disabled
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh autoswap-check
+
+      - name: Verify slot warmup settings
+        if: inputs.swap-warmup-ping-path != ''
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          STAGING_SLOT: ${{ inputs.staging-slot }}
+          SWAP_WARMUP_PING_PATH: ${{ inputs.swap-warmup-ping-path }}
+          SWAP_WARMUP_PING_STATUSES: ${{ inputs.swap-warmup-ping-statuses }}
+          WARMUP_PATH: ${{ inputs.warmup-path }}
+        run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh warmup-settings-check
 
       - name: Start staging slot before deploy
         if: inputs.manage_deploy_slot_lifecycle
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-start
@@ -254,7 +324,7 @@ jobs:
         if: inputs.package-path != '' || inputs.package-artifact-name != ''
         uses: azure/webapps-deploy@v3
         with:
-          app-name: ${{ inputs.webapp-name }}
+          app-name: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           slot-name: ${{ inputs.staging-slot }}
           package: ${{ inputs.package-path != '' && inputs.package-path || format('.promotion-package/{0}', inputs.package-artifact-filename) }}
           target-path: ${{ inputs.package-target-path }}
@@ -263,7 +333,7 @@ jobs:
         if: inputs.manage_deploy_slot_lifecycle && inputs.package-path == '' && inputs.package-artifact-name == ''
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-start
@@ -272,7 +342,7 @@ jobs:
         id: staging_health
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
           HEALTH_CHECK_URL: ${{ inputs.health-check-url }}
@@ -286,7 +356,7 @@ jobs:
         id: arm_promote
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
           TARGET_SLOT: ${{ inputs.target-slot }}
@@ -299,7 +369,7 @@ jobs:
         id: production_health
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           HEALTH_CHECK_PATH: ${{ inputs.health-check-path }}
           PRODUCTION_HEALTH_CHECK_URL: ${{ inputs.production-health-check-url }}
@@ -313,17 +383,17 @@ jobs:
         if: failure() && steps.arm_promote.outcome == 'success' && steps.production_health.outcome == 'failure'
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
           TARGET_SLOT: ${{ inputs.target-slot }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh rollback-swap
 
-      - name: Stop staging slot when lifecycle management is enabled
-        if: always() && inputs.manage_deploy_slot_lifecycle
+      - name: Stop staging slot after a healthy production promotion
+        if: inputs.manage_deploy_slot_lifecycle && steps.arm_promote.outcome == 'success' && steps.production_health.outcome == 'success'
         shell: bash
         env:
-          WEBAPP_NAME: ${{ inputs.webapp-name }}
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
           RESOURCE_GROUP: ${{ inputs.resource-group }}
           STAGING_SLOT: ${{ inputs.staging-slot }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh slot-stop
@@ -337,3 +407,12 @@ jobs:
           SMOKE_TEST_MAX_WAIT_SECONDS: ${{ inputs.smoke-test-max-wait-seconds }}
           POLL_INTERVAL_SECONDS: ${{ inputs.poll-interval-seconds }}
         run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh smoke-test
+
+      - name: Release slot mutation lock
+        if: always() && steps.slot_lock.outcome == 'success'
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp-name || secrets.AZURE_WEBAPP_NAME }}
+          RESOURCE_GROUP: ${{ inputs.resource-group }}
+          LOCK_OWNER: ${{ steps.lock_id.outputs.owner }}
+        run: bash reusable-workflows/.github/scripts/azure-app-service-slot-promotion.sh lock-release
