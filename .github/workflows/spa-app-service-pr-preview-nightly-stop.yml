@@ -1,4 +1,4 @@
-# Callable: stop Running pr-<number> slots on shared dev web apps (nightly plan memory relief).
+# Callable: delete pr-<number> slots on shared dev web apps (nightly plan memory relief).
 name: SPA App Service PR preview nightly stop
 
 on:
@@ -20,6 +20,16 @@ on:
         type: string
         required: false
         default: dev
+      caller_pre_delete_script:
+        description: Optional script in the caller repo before each slot is deleted
+        type: string
+        required: false
+        default: ""
+      caller_pre_delete_env_json:
+        description: JSON object exported before caller_pre_delete_script runs
+        type: string
+        required: false
+        default: "{}"
     secrets:
       AZURE_CLIENT_ID:
         required: true
@@ -27,20 +37,23 @@ on:
         required: true
       AZURE_TENANT_ID:
         required: true
+      ENTRA_APP_ID:
+        description: Optional Entra app id. When set, remove redirect URIs for deleted previews
+        required: false
     outputs:
       stopped_pr_numbers:
-        description: Space-separated PR numbers whose slots were stopped in this run
+        description: Space-separated PR numbers whose preview slots were deleted in this run
         value: ${{ jobs.stop.outputs.stopped_pr_numbers }}
       stopped_at_utc:
-        description: UTC timestamp when the stop pass finished
+        description: UTC timestamp when the delete pass finished
         value: ${{ jobs.stop.outputs.stopped_at_utc }}
 
 jobs:
   stop:
-    name: Stop running PR preview slots
+    name: Delete PR preview slots
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -55,6 +68,34 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Checkout caller repository
+        if: inputs.caller_pre_delete_script != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+
+      - name: Export caller pre-delete environment
+        if: inputs.caller_pre_delete_script != ''
+        shell: bash
+        env:
+          CALLER_PRE_DELETE_ENV_JSON: ${{ inputs.caller_pre_delete_env_json }}
+        run: |
+          set -euo pipefail
+          python3 - "$CALLER_PRE_DELETE_ENV_JSON" "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+          raw, path = sys.argv[1], sys.argv[2]
+          data = json.loads(raw)
+          if not isinstance(data, dict):
+              raise SystemExit("caller_pre_delete_env_json must be a JSON object")
+          with open(path, "a", encoding="utf-8") as handle:
+              for key, value in data.items():
+                  if not isinstance(key, str) or not key.replace("_", "").isalnum():
+                      raise SystemExit(f"unsupported caller pre-delete env name: {key}")
+                  text = "" if value is None else str(value)
+                  if "\n" in text or "\r" in text:
+                      raise SystemExit(f"unsupported caller pre-delete env value: {key}")
+                  handle.write(f"{key}={text}\n")
+          PY
+
       - name: Checkout workflow helper scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
         with:
@@ -65,10 +106,12 @@ jobs:
             .github/scripts/spa-app-service-pr-preview-nightly-stop.sh
           sparse-checkout-cone-mode: false
 
-      - name: Stop Running pr-* slots
+      - name: Delete pr-* slots
         id: stop
         shell: bash
         env:
           RESOURCE_GROUP: ${{ inputs.resource_group }}
           WEBAPP_NAMES_JSON: ${{ inputs.webapp_names_json }}
+          ENTRA_APP_ID: ${{ secrets.ENTRA_APP_ID }}
+          CALLER_PRE_DELETE_SCRIPT: ${{ inputs.caller_pre_delete_script }}
         run: bash reusable-workflows/.github/scripts/spa-app-service-pr-preview-nightly-stop.sh
