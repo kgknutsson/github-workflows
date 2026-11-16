@@ -18,6 +18,10 @@ Three callable workflows. The caller repository owns `on:`, path filters, and th
 1. **provision-slot** — optional plan memory gate, create the slot when missing, disable auto-swap, optional public network, set preview **Always On** off by default
 2. **deploy-to-slot** — checkout caller repo, optional caller prepare script, SCM wait (when the slot was new), build, zip-deploy with retries, HTTP verify, failure summary
 
+A `pull_request` **synchronize** event does not create a slot. If the slot is gone (nightly delete or close), the provision job sets `preview_skipped` to `true` and the deploy job does not run. The memory gate does not run on that skip. **opened**, **reopened**, and **workflow_dispatch** still create the slot.
+
+Pass `checkout_ref` on `workflow_dispatch` (for example `refs/pull/123/head`) so the build uses the pull request head. The caller must not post a preview link when `preview_skipped` is `true`.
+
 ## Hardening
 
 | Step | Behavior |
