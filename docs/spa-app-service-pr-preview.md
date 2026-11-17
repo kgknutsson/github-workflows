@@ -90,6 +90,8 @@ deploy-webapp-apps:
 
 The caller still owns the pull request comment job. Use `spa-app-service-pr-preview-cleanup.yml` and `spa-app-service-pr-preview-orphan-cleanup.yml` for slot teardown. Optional `caller_pre_delete_script` runs before slot delete (for example private SCM cleanup).
 
+Callable cleanup and orphan-cleanup jobs need `pull-requests: write` on the **reusable workflow job**, not only on the caller. Callers on `@v4` do not pass permissions through to the called workflow.
+
 ## Nightly shutoff (shared dev plan)
 
 Schedule a thin caller job pair in each repository that deploys previews:
