@@ -56,7 +56,7 @@ jobs:
       contents: read
       id-token: write
       issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Login to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
@@ -116,6 +116,8 @@ jobs:
             PR_NUMBER="$pr_number" python3 - <<'PY'
           import json
           import os
+          import sys
+          import urllib.error
           import urllib.request
           marker = os.environ["COMMENT_MARKER"]
           repo = os.environ["REPO"]
@@ -158,6 +160,12 @@ jobs:
               except urllib.error.HTTPError as error:
                   if error.code == 404:
                       print(f"Comment {comment['id']} was already deleted.")
+                  elif error.code in (401, 403):
+                      print(
+                          f"::warning::Could not delete comment {comment['id']} (HTTP {error.code}). "
+                          "The orphan-cleanup job needs pull-requests: write.",
+                          file=sys.stderr,
+                      )
                   else:
                       raise
           PY
