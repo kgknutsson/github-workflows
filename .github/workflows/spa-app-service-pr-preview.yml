@@ -123,6 +123,13 @@ on:
         type: boolean
         required: false
         default: false
+      checkout_ref:
+        description: >-
+          Optional git ref for the caller checkout. Set this on workflow_dispatch
+          so the job builds the pull request head. Empty uses the triggering ref.
+        type: string
+        required: false
+        default: ""
     secrets:
       AZURE_CLIENT_ID:
         required: true
@@ -143,6 +150,10 @@ on:
       slot_created:
         description: true when the provision job created the slot in this run
         value: ${{ jobs.provision-slot.outputs.slot_created }}
+      preview_skipped:
+        description: >-
+          true when a pull_request synchronize event found no slot and did not create one
+        value: ${{ jobs.provision-slot.outputs.preview_skipped }}
       failure_category:
         description: Coarse failure category when deploy-to-slot fails
         value: ${{ jobs.deploy-to-slot.outputs.failure_category }}
@@ -165,6 +176,7 @@ jobs:
     outputs:
       slot_created: ${{ steps.provision.outputs.slot_created }}
       slot_hostname: ${{ steps.provision.outputs.slot_hostname }}
+      preview_skipped: ${{ steps.decide.outputs.preview_skipped == 'true' || steps.provision.outputs.preview_skipped == 'true' }}
     steps:
       - name: Login to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
@@ -173,8 +185,34 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Skip a push when the preview slot is gone
+        id: decide
+        shell: bash
+        env:
+          WEBAPP_NAME: ${{ inputs.webapp_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+          SLOT_NAME: ${{ inputs.slot_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          preview_skipped=false
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "synchronize" ]; then
+            if ! printf '%s' "$SLOT_NAME" | grep -Eq '^pr-[0-9]+$'; then
+              echo "::error::slot_name must match pr-<number> (for example pr-123)."
+              exit 1
+            fi
+            existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
+            if [ "$existing" != "$SLOT_NAME" ]; then
+              echo "Preview slot ${SLOT_NAME} does not exist. A push does not create it."
+              echo "Run this workflow with workflow_dispatch to create the preview again."
+              preview_skipped=true
+            fi
+          fi
+          echo "preview_skipped=${preview_skipped}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout workflow helper scripts
-        if: inputs.plan_memory_percent_threshold != '' || inputs.slot_always_on != true
+        if: steps.decide.outputs.preview_skipped != 'true' && (inputs.plan_memory_percent_threshold != '' || inputs.slot_always_on != true)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
         with:
           repository: kgknutsson/github-workflows
@@ -185,7 +223,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Validate plan memory gate inputs
-        if: inputs.plan_memory_percent_threshold != ''
+        if: steps.decide.outputs.preview_skipped != 'true' && inputs.plan_memory_percent_threshold != ''
         shell: bash
         env:
           PLAN_NAME: ${{ inputs.app_service_plan_name }}
@@ -198,7 +236,7 @@ jobs:
           fi
 
       - name: Gate on shared App Service plan memory
-        if: inputs.plan_memory_percent_threshold != ''
+        if: steps.decide.outputs.preview_skipped != 'true' && inputs.plan_memory_percent_threshold != ''
         shell: bash
         env:
           PLAN_NAME: ${{ inputs.app_service_plan_name }}
@@ -208,6 +246,7 @@ jobs:
 
       - name: Create or reuse the preview slot
         id: provision
+        if: steps.decide.outputs.preview_skipped != 'true'
         shell: bash
         env:
           WEBAPP_NAME: ${{ inputs.webapp_name }}
@@ -216,6 +255,8 @@ jobs:
           CONFIGURATION_SOURCE: ${{ inputs.configuration_source }}
           ENABLE_PUBLIC_NETWORK: ${{ inputs.enable_public_network }}
           DISABLE_EASY_AUTH: ${{ inputs.disable_easy_auth }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
           if [ "$SLOT_NAME" = "production" ] || [ "$SLOT_NAME" = "staging" ]; then
@@ -229,6 +270,12 @@ jobs:
 
           slot_created=false
           existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
+          if [ "$existing" != "$SLOT_NAME" ] && [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "synchronize" ]; then
+            echo "Preview slot ${SLOT_NAME} does not exist. A push does not create it."
+            echo "slot_created=false" >> "$GITHUB_OUTPUT"
+            echo "preview_skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$existing" != "$SLOT_NAME" ]; then
             slot_count="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "length(@)" -o tsv)"
             if [ "$slot_count" -ge 20 ]; then
@@ -301,6 +348,7 @@ jobs:
   deploy-to-slot:
     name: Build and deploy preview
     needs: provision-slot
+    if: needs.provision-slot.outputs.preview_skipped != 'true'
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 30
@@ -310,6 +358,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read
     outputs:
       slot_hostname: ${{ steps.publish.outputs.slot_hostname }}
       slot_url: ${{ steps.publish.outputs.slot_url }}
@@ -323,6 +372,25 @@ jobs:
       HEALTH_PATH: ${{ inputs.health_path }}
       ACCEPT_AUTH_REDIRECT: ${{ inputs.accept_auth_redirect }}
     steps:
+      - name: Reject a fork checkout ref
+        if: inputs.checkout_ref != ''
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ inputs.checkout_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr="$(printf '%s' "$CHECKOUT_REF" | sed -n 's#^refs/pull/\([0-9][0-9]*\)/head$#\1#p')"
+          if [ -z "$pr" ]; then
+            echo "checkout_ref is not a pull request head."
+            exit 0
+          fi
+          head_repo="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.head.repo.full_name // ""')"
+          if [ -z "$head_repo" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Fork pull request previews are not supported on this workflow."
+            exit 1
+          fi
+
       - name: Reject fork pull request previews
         if: github.event_name == 'pull_request'
         shell: bash
@@ -334,7 +402,14 @@ jobs:
           fi
 
       - name: Checkout caller repository
+        if: inputs.checkout_ref == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+
+      - name: Checkout caller repository at the pull request head
+        if: inputs.checkout_ref != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
+        with:
+          ref: ${{ inputs.checkout_ref }}
 
       - name: Checkout workflow helper scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag: v7
