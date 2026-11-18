@@ -7,9 +7,9 @@ Three callable workflows. The caller repository owns `on:`, path filters, and th
 | `spa-app-service-pr-preview.yml` | Provision slot, optional caller prepare script, build, SCM wait, zip-deploy retries, HTTP verify |
 | `spa-app-service-pr-preview-cleanup.yml` | Delete one preview slot and the preview comment |
 | `spa-app-service-pr-preview-orphan-cleanup.yml` | Delete `pr-*` slots whose pull request is not open |
-| `spa-app-service-pr-preview-nightly-stop.yml` | Stop **Running** `pr-*` slots on a shared dev plan (caller schedule) |
-| `spa-app-service-pr-preview-shutoff-notice.yml` | Append nightly shutoff notice to existing preview PR comments |
-| `spa-app-service-pr-preview-discover-stopped.yml` | List **Stopped** `pr-*` slots on one web app (secondary repos) |
+| `spa-app-service-pr-preview-nightly-stop.yml` | Delete `pr-*` slots on a shared dev plan (Running and Stopped) |
+| `spa-app-service-pr-preview-shutoff-notice.yml` | Replace the preview comment after nightly delete. No live link |
+| `spa-app-service-pr-preview-discover-stopped.yml` | List **Stopped** `pr-*` slots on one web app (legacy callers) |
 
 ## Deploy job split
 
@@ -92,11 +92,13 @@ The caller still owns the pull request comment job. Use `spa-app-service-pr-prev
 
 Callable cleanup and orphan-cleanup jobs need `pull-requests: write` on the **reusable workflow job**, not only on the caller. Callers on `@v4` do not pass permissions through to the called workflow.
 
-## Nightly shutoff (shared dev plan)
+## Nightly removal (shared dev plan)
 
 Schedule a thin caller job pair in each repository that deploys previews:
 
-1. `spa-app-service-pr-preview-nightly-stop.yml` — pass a JSON array of web app names on the shared plan (monorepo: all five SPA dev apps; single-app repos: one name).
-2. `spa-app-service-pr-preview-shutoff-notice.yml` — pass `stopped_pr_numbers` from step 1 and `shutoff_at_utc`.
+1. `spa-app-service-pr-preview-nightly-stop.yml` — pass a JSON array of web app names on the shared plan (monorepo: all five SPA dev apps; single-app repos: one name). The job deletes every `pr-<number>` slot. It does not leave a Stopped slot.
+2. `spa-app-service-pr-preview-shutoff-notice.yml` — pass `stopped_pr_numbers` from step 1 and `shutoff_at_utc`. The output name is unchanged. The values are deleted pull request numbers. The notice replaces the preview comment. It removes the preview link. It tells the author to re-run the PR Preview workflow.
 
-Repositories that share a web app but do not run step 1 for all apps may schedule `spa-app-service-pr-preview-discover-stopped.yml` later (for example 02:15 UTC) and pass discovered PR numbers to the notice workflow.
+Pass `ENTRA_APP_ID` when the preview uses Easy Auth redirect URIs. Pass `caller_pre_delete_script` when close cleanup uses a private SCM hook. Each repository must run step 1 for the web apps it owns, then step 2 in that same repository. A delete in one repository does not update comments in another repository.
+
+`spa-app-service-pr-preview-discover-stopped.yml` does not see slots after this delete. Do not use it after the nightly delete.

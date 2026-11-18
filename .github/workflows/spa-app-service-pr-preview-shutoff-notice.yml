@@ -1,4 +1,4 @@
-# Callable: append nightly shutoff notice to open PR preview comments in the caller repo.
+# Callable: replace the preview comment after nightly slot delete.
 name: SPA App Service PR preview shutoff notice
 
 on:
@@ -22,7 +22,7 @@ on:
         description: Short heading for the shutoff notice block
         type: string
         required: false
-        default: "Nightly preview shutoff"
+        default: "Nightly preview removal"
 
 jobs:
   notify:
@@ -44,19 +44,23 @@ jobs:
           script: |
             const marker = process.env.MARKER || '<!-- pr-preview-webapp -->';
             const shutoffAt = process.env.SHUTOFF_AT || new Date().toISOString();
-            const heading = process.env.NOTICE_HEADING || 'Nightly preview shutoff';
+            const heading = process.env.NOTICE_HEADING || 'Nightly preview removal';
             const raw = (process.env.PR_NUMBERS || '').trim();
             if (!raw) {
               core.info('No PR numbers to notify.');
               return;
             }
             const numbers = [...new Set(raw.split(/\s+/).map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n)))];
-            const noticeBlock = [
-              '',
-              `> **${heading}** (${shutoffAt} UTC): Web App \`pr-*\` preview slots on the shared dev plan were **stopped** to free memory.`,
-              '> Push to this pull request or run the **PR Preview** workflow to start previews again during the day.',
-            ].join('\n');
             const shutoffMarker = '<!-- pr-preview-webapp-shutoff -->';
+            const body = [
+              marker,
+              '',
+              `> **${heading}** (${shutoffAt} UTC): The preview slot was **removed** overnight to free memory on the shared dev plan.`,
+              '> The preview link is no longer valid.',
+              '> To create a preview again, run the **PR Preview** workflow manually for this pull request and select the pull request branch.',
+              '',
+              shutoffMarker,
+            ].join('\n');
 
             for (const number of numbers) {
               let pr;
@@ -91,18 +95,11 @@ jobs:
                 continue;
               }
 
-              let body = existing.body || '';
-              const shutoffIndex = body.indexOf(shutoffMarker);
-              if (shutoffIndex >= 0) {
-                body = body.slice(0, shutoffIndex).trimEnd();
-              }
-              body = `${body}${noticeBlock}\n${shutoffMarker}\n`;
-
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 comment_id: existing.id,
                 body,
               });
-              core.info(`Updated shutoff notice on PR #${number}.`);
+              core.info(`Replaced preview comment on PR #${number}.`);
             }
