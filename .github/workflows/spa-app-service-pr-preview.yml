@@ -176,7 +176,7 @@ jobs:
     outputs:
       slot_created: ${{ steps.provision.outputs.slot_created }}
       slot_hostname: ${{ steps.provision.outputs.slot_hostname }}
-      preview_skipped: ${{ steps.decide.outputs.preview_skipped }}
+      preview_skipped: ${{ steps.decide.outputs.preview_skipped == 'true' || steps.provision.outputs.preview_skipped == 'true' }}
     steps:
       - name: Login to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
@@ -255,6 +255,8 @@ jobs:
           CONFIGURATION_SOURCE: ${{ inputs.configuration_source }}
           ENABLE_PUBLIC_NETWORK: ${{ inputs.enable_public_network }}
           DISABLE_EASY_AUTH: ${{ inputs.disable_easy_auth }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
           if [ "$SLOT_NAME" = "production" ] || [ "$SLOT_NAME" = "staging" ]; then
@@ -268,6 +270,12 @@ jobs:
 
           slot_created=false
           existing="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "[?name=='${SLOT_NAME}'].name | [0]" -o tsv)"
+          if [ "$existing" != "$SLOT_NAME" ] && [ "$EVENT_NAME" = "pull_request" ] && [ "$EVENT_ACTION" = "synchronize" ]; then
+            echo "Preview slot ${SLOT_NAME} does not exist. A push does not create it."
+            echo "slot_created=false" >> "$GITHUB_OUTPUT"
+            echo "preview_skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$existing" != "$SLOT_NAME" ]; then
             slot_count="$(az webapp deployment slot list --name "$WEBAPP_NAME" --resource-group "$RESOURCE_GROUP" --query "length(@)" -o tsv)"
             if [ "$slot_count" -ge 20 ]; then
@@ -350,6 +358,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      pull-requests: read
     outputs:
       slot_hostname: ${{ steps.publish.outputs.slot_hostname }}
       slot_url: ${{ steps.publish.outputs.slot_url }}
@@ -363,6 +372,25 @@ jobs:
       HEALTH_PATH: ${{ inputs.health_path }}
       ACCEPT_AUTH_REDIRECT: ${{ inputs.accept_auth_redirect }}
     steps:
+      - name: Reject a fork checkout ref
+        if: inputs.checkout_ref != ''
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ inputs.checkout_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr="$(printf '%s' "$CHECKOUT_REF" | sed -n 's#^refs/pull/\([0-9][0-9]*\)/head$#\1#p')"
+          if [ -z "$pr" ]; then
+            echo "checkout_ref is not a pull request head."
+            exit 0
+          fi
+          head_repo="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.head.repo.full_name // ""')"
+          if [ -z "$head_repo" ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::Fork pull request previews are not supported on this workflow."
+            exit 1
+          fi
+
       - name: Reject fork pull request previews
         if: github.event_name == 'pull_request'
         shell: bash
