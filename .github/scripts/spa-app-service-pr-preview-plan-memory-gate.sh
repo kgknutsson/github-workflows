@@ -65,6 +65,6 @@ echo "Plan ${PLAN_NAME} memory (15m avg): ${avg}% (threshold ${THRESHOLD}%)."
 
 if awk -v memory="$avg" -v limit="$THRESHOLD" 'BEGIN { exit (memory + 0 > limit + 0) ? 0 : 1 }'; then
   echo "::error::Shared App Service plan memory is ${avg}% (limit ${THRESHOLD}%)."
-  echo "::error::Close old pull requests, wait for nightly preview shutoff, or stop other pr-* slots on this plan."
+  echo "::error::Close old pull requests, wait for nightly preview removal, or delete other pr-* slots on this plan."
   exit 1
 fi
