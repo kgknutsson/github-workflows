@@ -63,14 +63,35 @@ done
 
 if [ -n "${ENTRA_APP_ID:-}" ] && [ "${#removed_prs[@]}" -gt 0 ]; then
   unique_for_entra="$(printf '%s\n' "${removed_prs[@]}" | sort -un | tr '\n' ' ')"
-  current="$(az ad app show --id "$ENTRA_APP_ID" --query "web.redirectUris" -o json)"
-  if [ -z "$current" ] || [ "$current" = "null" ]; then
-    current="[]"
+  read_redirects() {
+    local value
+    value="$(az ad app show --id "$ENTRA_APP_ID" --query "web.redirectUris" -o json)"
+    if [ -z "$value" ] || [ "$value" = "null" ]; then
+      value="[]"
+    fi
+    printf '%s' "$value"
+  }
+  filter_redirects() {
+    local source="$1"
+    local pr_number
+    for pr_number in $unique_for_entra; do
+      source="$(printf '%s' "$source" | jq -c --arg num "$pr_number" '[.[] | select((contains("pr-" + $num + ".") or contains("pr-" + $num + "/")) | not)]')"
+    done
+    printf '%s' "$source"
+  }
+  current="$(read_redirects)"
+  filtered="$(filter_redirects "$current")"
+  latest="$(read_redirects)"
+  if [ "$(printf '%s' "$current" | jq -c 'sort')" != "$(printf '%s' "$latest" | jq -c 'sort')" ]; then
+    echo "Redirect URIs changed. Read the list again."
+    current="$latest"
+    filtered="$(filter_redirects "$current")"
+    latest="$(read_redirects)"
+    if [ "$(printf '%s' "$current" | jq -c 'sort')" != "$(printf '%s' "$latest" | jq -c 'sort')" ]; then
+      echo "::error::Redirect URIs changed during cleanup. No update was sent."
+      exit 1
+    fi
   fi
-  filtered="$current"
-  for pr_number in $unique_for_entra; do
-    filtered="$(printf '%s' "$filtered" | jq -c --arg num "$pr_number" '[.[] | select((contains("pr-" + $num + ".") or contains("pr-" + $num + "/")) | not)]')"
-  done
   if [ "$(printf '%s' "$current" | jq -c 'sort')" = "$(printf '%s' "$filtered" | jq -c 'sort')" ]; then
     echo "No matching redirect URIs."
   elif [ "$filtered" = "[]" ]; then

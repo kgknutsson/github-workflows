@@ -57,7 +57,7 @@ jobs:
               '',
               `> **${heading}** (${shutoffAt} UTC): The preview slot was **removed** overnight to free memory on the shared dev plan.`,
               '> The preview link is no longer valid.',
-              '> To create a preview again, run the **PR Preview** workflow manually for this pull request. Select the pull request branch. A later push does not create the slot.',
+              '> To create a preview again, run the **PR Preview** workflow manually for this pull request and select the pull request branch.',
               '',
               shutoffMarker,
             ].join('\n');
