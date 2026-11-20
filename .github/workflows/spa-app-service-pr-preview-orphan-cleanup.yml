@@ -39,7 +39,7 @@ on:
       AZURE_TENANT_ID:
         required: true
       ENTRA_APP_ID:
-        description: Optional Entra app id for redirect URI cleanup (prefer over entra_app_id input)
+        description: Optional Entra app id for redirect URI cleanup when entra_app_id input is empty
         required: false
 
 jobs:
@@ -180,7 +180,7 @@ jobs:
 
   # Remove pr-* redirect URIs for pull requests that are not open, including
   # callbacks left after the slot was already deleted outside this run.
-  # Pass entra_app_id (not only ENTRA_APP_ID) so Graph updates serialize on one group.
+  # Serialize on the same effective Entra app id as close cleanup (input, else secret).
   entra-redirects:
     needs: orphan-cleanup
     if: always() && needs.orphan-cleanup.result == 'success'
@@ -191,7 +191,9 @@ jobs:
       group: >-
         ${{ inputs.entra_app_id != ''
             && format('spa-preview-entra-{0}', inputs.entra_app_id)
-            || format('spa-preview-entra-orphan-{0}', inputs.webapp_name) }}
+            || (secrets.ENTRA_APP_ID != ''
+                && format('spa-preview-entra-{0}', secrets.ENTRA_APP_ID)
+                || format('spa-preview-entra-orphan-{0}', inputs.webapp_name)) }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -208,7 +210,7 @@ jobs:
       - name: Remove redirect URIs for closed or missing previews
         shell: bash
         env:
-          ENTRA_APP_ID: ${{ secrets.ENTRA_APP_ID != '' && secrets.ENTRA_APP_ID || inputs.entra_app_id }}
+          ENTRA_APP_ID: ${{ inputs.entra_app_id != '' && inputs.entra_app_id || secrets.ENTRA_APP_ID }}
           DELETED_PRS: ${{ needs.orphan-cleanup.outputs.deleted_prs }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

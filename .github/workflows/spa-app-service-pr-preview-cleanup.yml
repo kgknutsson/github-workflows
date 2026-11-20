@@ -62,7 +62,7 @@ on:
       AZURE_TENANT_ID:
         required: true
       ENTRA_APP_ID:
-        description: Optional Entra app id for redirect URI cleanup (prefer over entra_app_id input)
+        description: Optional Entra app id for redirect URI cleanup when entra_app_id input is empty
         required: false
 
 jobs:
@@ -231,8 +231,8 @@ jobs:
               sys.exit(0)
           PY
 
-  # When entra_app_id is empty, matrix legs must not share one concurrency group.
-  # GitHub cancels prior pending jobs in a group even when cancel-in-progress is false.
+  # Serialize Graph redirect updates on the effective Entra app id (input, else secret).
+  # When neither is set, keep per-slot groups so empty matrix legs do not cancel each other.
   entra-redirects:
     needs: cleanup
     if: always() && needs.cleanup.result != 'cancelled'
@@ -243,7 +243,9 @@ jobs:
       group: >-
         ${{ inputs.entra_app_id != ''
             && format('spa-preview-entra-{0}', inputs.entra_app_id)
-            || format('spa-preview-entra-local-{0}-{1}', inputs.webapp_name, inputs.slot_name) }}
+            || (secrets.ENTRA_APP_ID != ''
+                && format('spa-preview-entra-{0}', secrets.ENTRA_APP_ID)
+                || format('spa-preview-entra-local-{0}-{1}', inputs.webapp_name, inputs.slot_name)) }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -259,7 +261,7 @@ jobs:
       - name: Remove preview redirect URIs
         shell: bash
         env:
-          ENTRA_APP_ID: ${{ secrets.ENTRA_APP_ID != '' && secrets.ENTRA_APP_ID || inputs.entra_app_id }}
+          ENTRA_APP_ID: ${{ inputs.entra_app_id != '' && inputs.entra_app_id || secrets.ENTRA_APP_ID }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
