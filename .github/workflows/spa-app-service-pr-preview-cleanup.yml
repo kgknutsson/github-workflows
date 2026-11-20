@@ -231,8 +231,10 @@ jobs:
               sys.exit(0)
           PY
 
-  # Serialize Graph redirect updates on the effective Entra app id (input, else secret).
-  # When neither is set, keep per-slot groups so empty matrix legs do not cancel each other.
+  # Serialize Graph redirect updates on entra_app_id when callers pass it.
+  # secrets cannot be used in concurrency expressions; secret-only callers share one
+  # webapp-level group so matrix slots for the same app do not race. Multi-webapp
+  # callers that share one Entra registration must pass entra_app_id.
   entra-redirects:
     needs: cleanup
     if: always() && needs.cleanup.result != 'cancelled'
@@ -243,9 +245,7 @@ jobs:
       group: >-
         ${{ inputs.entra_app_id != ''
             && format('spa-preview-entra-{0}', inputs.entra_app_id)
-            || (secrets.ENTRA_APP_ID != ''
-                && format('spa-preview-entra-{0}', secrets.ENTRA_APP_ID)
-                || format('spa-preview-entra-local-{0}-{1}', inputs.webapp_name, inputs.slot_name)) }}
+            || format('spa-preview-entra-webapp-{0}', inputs.webapp_name) }}
       cancel-in-progress: false
     permissions:
       contents: read

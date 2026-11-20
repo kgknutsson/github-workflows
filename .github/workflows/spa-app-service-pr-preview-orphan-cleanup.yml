@@ -180,7 +180,7 @@ jobs:
 
   # Remove pr-* redirect URIs for pull requests that are not open, including
   # callbacks left after the slot was already deleted outside this run.
-  # Serialize on the same effective Entra app id as close cleanup (input, else secret).
+  # Use the same concurrency key shape as close cleanup (input app id, else webapp).
   entra-redirects:
     needs: orphan-cleanup
     if: always() && needs.orphan-cleanup.result == 'success'
@@ -191,9 +191,7 @@ jobs:
       group: >-
         ${{ inputs.entra_app_id != ''
             && format('spa-preview-entra-{0}', inputs.entra_app_id)
-            || (secrets.ENTRA_APP_ID != ''
-                && format('spa-preview-entra-{0}', secrets.ENTRA_APP_ID)
-                || format('spa-preview-entra-orphan-{0}', inputs.webapp_name)) }}
+            || format('spa-preview-entra-webapp-{0}', inputs.webapp_name) }}
       cancel-in-progress: false
     permissions:
       contents: read
