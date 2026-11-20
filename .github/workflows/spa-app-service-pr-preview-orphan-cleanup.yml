@@ -23,7 +23,7 @@ on:
         required: false
         default: "<!-- pr-preview-webapp -->"
       entra_app_id:
-        description: When set, remove redirect URIs for each deleted preview
+        description: When set, remove stale pr-* redirect URIs and serialize Graph updates on this app id (prefer over secret-only).
         type: string
         required: false
         default: ""
@@ -178,18 +178,25 @@ jobs:
           done
           echo "deleted_prs=${deleted# }" >> "$GITHUB_OUTPUT"
 
+  # Remove pr-* redirect URIs for pull requests that are not open, including
+  # callbacks left after the slot was already deleted outside this run.
+  # Pass entra_app_id (not only ENTRA_APP_ID) so Graph updates serialize on one group.
   entra-redirects:
     needs: orphan-cleanup
-    if: always() && needs.orphan-cleanup.result == 'success' && needs.orphan-cleanup.outputs.deleted_prs != ''
+    if: always() && needs.orphan-cleanup.result == 'success'
     runs-on: ${{ inputs.runner }}
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
     concurrency:
-      group: spa-preview-entra-${{ inputs.entra_app_id }}
+      group: >-
+        ${{ inputs.entra_app_id != ''
+            && format('spa-preview-entra-{0}', inputs.entra_app_id)
+            || format('spa-preview-entra-orphan-{0}', inputs.webapp_name) }}
       cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
+      pull-requests: read
     steps:
       - name: Login to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # tag: v3
@@ -198,11 +205,13 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Remove redirect URIs for deleted previews
+      - name: Remove redirect URIs for closed or missing previews
         shell: bash
         env:
           ENTRA_APP_ID: ${{ secrets.ENTRA_APP_ID != '' && secrets.ENTRA_APP_ID || inputs.entra_app_id }}
           DELETED_PRS: ${{ needs.orphan-cleanup.outputs.deleted_prs }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ -z "$ENTRA_APP_ID" ]; then
@@ -213,8 +222,47 @@ jobs:
           if [ -z "$current" ] || [ "$current" = "null" ]; then
             current="[]"
           fi
-          filtered="$current"
+
+          # PR numbers from slots deleted in this run, plus pr-* callbacks still on the app.
+          prune_numbers=""
           for pr_number in $DELETED_PRS; do
+            prune_numbers="${prune_numbers} ${pr_number}"
+          done
+          mapfile -t uri_pr_numbers < <(
+            printf '%s' "$current" | jq -r '.[]' | sed -n 's/.*pr-\([0-9][0-9]*\)[./].*/\1/p' | sort -u
+          )
+          for pr_number in "${uri_pr_numbers[@]+"${uri_pr_numbers[@]}"}"; do
+            [ -n "$pr_number" ] || continue
+            set +e
+            state="$(gh pr view "$pr_number" --repo "$REPO" --json state --jq .state 2>"$RUNNER_TEMP/pr-view-error")"
+            view_exit=$?
+            set -e
+            if [ "$view_exit" -ne 0 ]; then
+              if grep -qi "Could not resolve" "$RUNNER_TEMP/pr-view-error"; then
+                state="MISSING"
+              else
+                echo "::error::Unable to read pull request ${pr_number}."
+                cat "$RUNNER_TEMP/pr-view-error"
+                exit 1
+              fi
+            fi
+            if [ "$state" = "OPEN" ]; then
+              echo "Pull request ${pr_number} is open. Keep its redirect URIs."
+              continue
+            fi
+            echo "Pull request ${pr_number} state is ${state}. Queue redirect URI removal."
+            prune_numbers="${prune_numbers} ${pr_number}"
+          done
+
+          prune_numbers="$(printf '%s' "$prune_numbers" | tr ' ' '\n' | awk 'NF' | sort -u | tr '\n' ' ')"
+          prune_numbers="${prune_numbers% }"
+          if [ -z "$prune_numbers" ]; then
+            echo "No closed or missing preview redirect URIs to remove."
+            exit 0
+          fi
+
+          filtered="$current"
+          for pr_number in $prune_numbers; do
             filtered="$(printf '%s' "$filtered" | jq -c --arg num "$pr_number" '[.[] | select((contains("pr-" + $num + ".") or contains("pr-" + $num + "/")) | not)]')"
           done
           if [ "$(printf '%s' "$current" | jq -c 'sort')" = "$(printf '%s' "$filtered" | jq -c 'sort')" ]; then

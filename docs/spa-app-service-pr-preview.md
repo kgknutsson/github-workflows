@@ -96,6 +96,10 @@ The caller still owns the pull request comment job. Use `spa-app-service-pr-prev
 
 Callable cleanup and orphan-cleanup jobs need `pull-requests: write` on the **reusable workflow job**, not only on the caller. Callers on `@v4` do not pass permissions through to the called workflow.
 
+Pass `entra_app_id` (not only the `ENTRA_APP_ID` secret) when several apps share one preview registration. The concurrency group uses that input so Graph updates serialize. When the input is empty, each job uses a local group so matrix legs do not cancel each other.
+
+`spa-app-service-pr-preview-orphan-cleanup.yml` removes `pr-*` redirect URIs for pull requests that are not open, even when the slot was already gone before the run.
+
 ## Nightly removal (shared dev plan)
 
 Schedule a thin caller job pair in each repository that deploys previews:

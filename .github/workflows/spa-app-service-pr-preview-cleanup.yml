@@ -26,7 +26,7 @@ on:
         required: false
         default: "<!-- pr-preview-webapp -->"
       entra_app_id:
-        description: When set, remove redirect URIs that contain pr-<number>
+        description: When set, remove redirect URIs that contain pr-<number>. Also sets the Entra concurrency group (prefer over secret-only).
         type: string
         required: false
         default: ""
@@ -231,6 +231,8 @@ jobs:
               sys.exit(0)
           PY
 
+  # When entra_app_id is empty, matrix legs must not share one concurrency group.
+  # GitHub cancels prior pending jobs in a group even when cancel-in-progress is false.
   entra-redirects:
     needs: cleanup
     if: always() && needs.cleanup.result != 'cancelled'
@@ -238,7 +240,10 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
     concurrency:
-      group: spa-preview-entra-${{ inputs.entra_app_id }}
+      group: >-
+        ${{ inputs.entra_app_id != ''
+            && format('spa-preview-entra-{0}', inputs.entra_app_id)
+            || format('spa-preview-entra-local-{0}-{1}', inputs.webapp_name, inputs.slot_name) }}
       cancel-in-progress: false
     permissions:
       contents: read
