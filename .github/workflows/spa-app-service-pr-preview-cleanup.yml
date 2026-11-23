@@ -26,7 +26,7 @@ on:
         required: false
         default: "<!-- pr-preview-webapp -->"
       entra_app_id:
-        description: When set, remove redirect URIs that contain pr-<number>
+        description: When set, remove redirect URIs that contain pr-<number>. Also sets the Entra concurrency group (prefer over secret-only).
         type: string
         required: false
         default: ""
@@ -62,7 +62,7 @@ on:
       AZURE_TENANT_ID:
         required: true
       ENTRA_APP_ID:
-        description: Optional Entra app id for redirect URI cleanup (prefer over entra_app_id input)
+        description: Optional Entra app id for redirect URI cleanup when entra_app_id input is empty
         required: false
 
 jobs:
@@ -231,6 +231,10 @@ jobs:
               sys.exit(0)
           PY
 
+  # Serialize Graph redirect updates on entra_app_id when callers pass it.
+  # secrets cannot be used in concurrency expressions; secret-only callers share one
+  # webapp-level group so matrix slots for the same app do not race. Multi-webapp
+  # callers that share one Entra registration must pass entra_app_id.
   entra-redirects:
     needs: cleanup
     if: always() && needs.cleanup.result != 'cancelled'
@@ -238,7 +242,10 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 20
     concurrency:
-      group: spa-preview-entra-${{ inputs.entra_app_id }}
+      group: >-
+        ${{ inputs.entra_app_id != ''
+            && format('spa-preview-entra-{0}', inputs.entra_app_id)
+            || format('spa-preview-entra-webapp-{0}', inputs.webapp_name) }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -254,7 +261,7 @@ jobs:
       - name: Remove preview redirect URIs
         shell: bash
         env:
-          ENTRA_APP_ID: ${{ secrets.ENTRA_APP_ID != '' && secrets.ENTRA_APP_ID || inputs.entra_app_id }}
+          ENTRA_APP_ID: ${{ inputs.entra_app_id != '' && inputs.entra_app_id || secrets.ENTRA_APP_ID }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
