@@ -849,7 +849,9 @@ slot_lock_patch() {
     -X PATCH \
     -H "Authorization: Bearer ${SLOT_LOCK_TOKEN}" \
     -H "Content-Type: application/json" \
-    -H "If-Match: ${SLOT_LOCK_ETAG}" \
+    # Microsoft.Web/sites rejects concrete If-Match ETags on tag-only PATCH (HTTP 412).
+    # If-Match: * still serializes writers; a concrete ETag never succeeds on this API.
+    -H "If-Match: *" \
     -d "$payload" \
     "$SLOT_LOCK_URL")" || true
   rm -f "$err_file"
