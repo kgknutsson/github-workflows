@@ -843,14 +843,14 @@ slot_lock_patch() {
   local payload http err_file
   payload="$1"
   err_file="$(mktemp)"
+  # Microsoft.Web/sites rejects concrete If-Match ETags on tag-only PATCH (HTTP 412).
+  # If-Match: * still serializes writers; a concrete ETag never succeeds on this API.
   http="$(curl --silent --show-error \
     -o "$err_file" \
     -w "%{http_code}" \
     -X PATCH \
     -H "Authorization: Bearer ${SLOT_LOCK_TOKEN}" \
     -H "Content-Type: application/json" \
-    # Microsoft.Web/sites rejects concrete If-Match ETags on tag-only PATCH (HTTP 412).
-    # If-Match: * still serializes writers; a concrete ETag never succeeds on this API.
     -H "If-Match: *" \
     -d "$payload" \
     "$SLOT_LOCK_URL")" || true
