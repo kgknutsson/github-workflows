@@ -843,13 +843,16 @@ slot_lock_patch() {
   local payload http err_file
   payload="$1"
   err_file="$(mktemp)"
+  # Microsoft.Web/sites rejects concrete If-Match ETags on tag-only PATCH (HTTP 412).
+  # If-Match: * only requires the resource to exist; it is not compare-and-swap.
+  # Callers must verify ownership with a read after a successful write.
   http="$(curl --silent --show-error \
     -o "$err_file" \
     -w "%{http_code}" \
     -X PATCH \
     -H "Authorization: Bearer ${SLOT_LOCK_TOKEN}" \
     -H "Content-Type: application/json" \
-    -H "If-Match: ${SLOT_LOCK_ETAG}" \
+    -H "If-Match: *" \
     -d "$payload" \
     "$SLOT_LOCK_URL")" || true
   rm -f "$err_file"
@@ -877,10 +880,16 @@ cmd_lock_acquire() {
       http="$(slot_lock_patch "$payload")"
       rm -f "$SLOT_LOCK_BODY"
       if [[ "$http" == "200" || "$http" == "201" ]]; then
-        echo "Acquired the slot lock."
-        exit 0
-      fi
-      if [[ "$http" != "412" ]]; then
+        # Confirm we still own the tag; another writer can win under If-Match: *.
+        slot_lock_read
+        value="$(slot_lock_value "$SLOT_LOCK_BODY")"
+        rm -f "$SLOT_LOCK_BODY"
+        if slot_lock_held_by_us "$value"; then
+          echo "Acquired the slot lock."
+          exit 0
+        fi
+        echo "Lost the slot lock race after PATCH; retrying."
+      elif [[ "$http" != "412" ]]; then
         echo "::error::Could not write the slot lock. HTTP ${http}."
         exit 1
       fi
@@ -911,6 +920,18 @@ cmd_lock_release() {
   http="$(slot_lock_patch "$payload")"
   rm -f "$SLOT_LOCK_BODY"
   if [[ "$http" == "200" || "$http" == "201" ]]; then
+    # Re-read: if another owner holds the lock, leave their value alone.
+    slot_lock_read
+    value="$(slot_lock_value "$SLOT_LOCK_BODY")"
+    rm -f "$SLOT_LOCK_BODY"
+    if [[ -n "$value" ]] && ! slot_lock_held_by_us "$value"; then
+      echo "Released the slot lock; another run holds it now."
+      exit 0
+    fi
+    if slot_lock_held_by_us "$value"; then
+      echo "::error::The slot lock is still held by this run after release."
+      exit 1
+    fi
     echo "Released the slot lock."
     exit 0
   fi
